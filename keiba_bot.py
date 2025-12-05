@@ -18,12 +18,15 @@ def set_race_params(year, kai, place, day):
     PLACE = place
     DAY = day
 
-# 1. ログイン情報（★ご自身のID/PASSを入れてください）
-KEIBA_ID = "t_poke_veritas_0114@yahoo.co.jp"
-KEIBA_PASS = "seraphim"
+import streamlit as st  # 先頭の方に書く
 
-# 2. Dify APIキー（★ご自身のAPIキーを入れてください）
-DIFY_API_KEY = "app-AxqWcM0t2z0D3xxMYCRMvNm1"
+# Secretsから読み込むように書き換える
+login_id = st.secrets["KEIBA_ID"]
+password = st.secrets["KEIBA_PASS"]
+
+# 2. Dify APIキー（Secretsから読み込むように変更）
+# 万が一 Secrets に設定がない場合は空文字にする安全策
+DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
 
 # 3. 開催情報の入力
 YEAR  = "2025"
@@ -47,9 +50,16 @@ def run_all_races():
     }
     place_name = place_names.get(PLACE, "不明な競馬場")
 
-    print(f"🚀 {YEAR}年{KAI}回 {place_name} {DAY}日目の全レース攻略を開始します！")
+   print(f"🚀 {YEAR}年{KAI}回 {place_name} {DAY}日目の全レース攻略を開始します！")
 
-    driver = webdriver.Chrome()
+    # ▼▼ クラウド用設定（ヘッドレスモード）に変更 ▼▼
+    from selenium.webdriver.chrome.options import Options
+    options = Options()
+    options.add_argument('--headless')  # 画面を表示しないモード
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    
+    driver = webdriver.Chrome(options=options)
 
     try:
         # --- ログイン部分 ---
@@ -189,4 +199,5 @@ def run_all_races():
         driver.quit()
 
 if __name__ == "__main__":
+
     run_all_races()
