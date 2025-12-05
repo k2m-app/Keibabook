@@ -1,62 +1,41 @@
-import io
-import sys
 import streamlit as st
+import keiba_bot  # keiba_bot.py を読み込む
 
-# keiba_bot.py から関数をインポート
-from keiba_bot import run_all_races, set_race_params
+# 画面のタイトル
+st.title("🐎 競馬AI分析アプリ")
 
-PLACE_OPTIONS = [
-    ("00", "京都"),
-    ("01", "阪神"),
-    ("02", "中京"),
-    ("03", "小倉"),
-    ("04", "東京"),
-    ("05", "中山"),
-    ("06", "福島"),
-    ("07", "新潟"),
-    ("08", "札幌"),
-    ("09", "函館"),
-]
+# --- サイドバーで設定 ---
+st.sidebar.header("開催設定")
 
-def main():
-    st.title("🏇 競馬ブック 全レース攻略アプリ（ローカル版）")
+# 入力フォーム（スマホでも選択しやすいように）
+year = st.sidebar.text_input("年 (YEAR)", "2025")
+kai = st.sidebar.selectbox("回 (KAI)", ["01", "02", "03", "04", "05"], index=3) # デフォルト04
+day = st.sidebar.selectbox("日目 (DAY)", ["01", "02", "03", "04", "05", "06", "07", "08"], index=6) # デフォルト07
 
-    st.markdown(
-        "PCでSeleniumを動かして、ここから開催情報を指定して実行します。"
-        "<br>実行ログとAIの回答は画面下に表示されます。",
-        unsafe_allow_html=True,
-    )
+# 場所コードの選択肢
+places = {
+    "00": "京都", "01": "阪神", "02": "中京", "03": "小倉",
+    "04": "東京", "05": "中山", "06": "福島", "07": "新潟",
+    "08": "札幌", "09": "函館"
+}
+# ユーザーには日本語で選ばせて、裏でコード(04など)に変換
+place_name = st.sidebar.selectbox("競馬場 (PLACE)", list(places.values()), index=4) # デフォルト東京
+place_code = [k for k, v in places.items() if v == place_name][0]
 
-    # 入力フォーム
-    year = st.text_input("年 (YYYY)", "2025")
-    kai = st.text_input("回 (2桁)", "04")
+# --- メイン画面 ---
+st.write(f"### 設定: {year}年 {kai}回 {place_name} {day}日目")
+st.write("ボタンを押すと、競馬ブックにログインして分析を開始します。")
 
-    place = st.selectbox(
-        "場所コード",
-        options=PLACE_OPTIONS,
-        format_func=lambda x: f"{x[0]}: {x[1]}",
-    )
-    place_code = place[0]  # ("00", "京都") → "00"
-
-    day = st.text_input("日目 (2桁)", "07")
-
-    if st.button("この開催の全レースを分析する"):
-        # 標準出力をキャプチャして、print を画面に出す
-        buffer = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = buffer
-
+# ボタンが押されたら実行
+if st.button("分析スタート 🚀"):
+    with st.spinner("分析中...これには数分かかります..."):
         try:
-            # まず開催情報をセットしてから実行
-            set_race_params(year, kai, place_code, day)
-            run_all_races()
+            # 1. 設定値をbotに渡す
+            keiba_bot.set_race_params(year, kai, place_code, day)
+            
+            # 2. 実行する
+            keiba_bot.run_all_races()
+            
+            st.success("全てのレースの分析が完了しました！")
         except Exception as e:
-            print(f"[アプリ内エラー] {e}")
-        finally:
-            sys.stdout = old_stdout
-
-        log_text = buffer.getvalue()
-        st.text_area("実行ログ / AI分析結果", log_text, height=600)
-
-if __name__ == "__main__":
-    main()
+            st.error(f"エラーが発生しました: {e}")
