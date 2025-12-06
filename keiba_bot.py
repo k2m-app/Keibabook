@@ -197,7 +197,7 @@ def run_all_races():
 
                 response = requests.post(url, headers=headers, json=payload)
 
-                if response.status_code == 200:
+                               if response.status_code == 200:
                     result = response.json()
                     outputs = result.get("data", {}).get("outputs") or result.get("data") or {}
                     ai_answer = outputs.get("answer")
@@ -210,8 +210,22 @@ def run_all_races():
                         st.write(f"### {place_name} {i}R")
                         st.write(ai_answer)
                         st.write("---")
+
+                        # ★ここで履歴を Supabase に保存する
+                        save_history(
+                            YEAR,           # 例: "2025"
+                            KAI,            # 例: "04"
+                            PLACE,          # 例: "00"
+                            place_name,     # 例: "京都"
+                            DAY,            # 例: "07"
+                            race_num_str,   # 例: "01"
+                            current_race_id,# 例: "202504000701"
+                            ai_answer       # 予想結果テキスト
+                        )
+
                     else:
                         print("⚠️ 分析はできたけど、返事が空っぽでした...")
+
                 else:
                     print(f"❌ {i}Rのエラー: Dify通信失敗 (コード: {response.status_code})")
 
@@ -224,5 +238,6 @@ def run_all_races():
 
 if __name__ == "__main__":
     run_all_races()
+
 
 
