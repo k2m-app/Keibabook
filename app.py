@@ -115,3 +115,5 @@ if mode == "予想する":
 
 elif mode == "直近1週間の履歴を見る":
     show_history()
+    
+
