@@ -4,4 +4,6 @@ requests
 beautifulsoup4
 selenium
 webdriver-manager
+supabase
+
 google-generativeai
