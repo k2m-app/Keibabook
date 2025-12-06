@@ -1,6 +1,11 @@
 import streamlit as st
 import keiba_bot  # keiba_bot.py を読み込む
 
+# Supabase と日付用
+from supabase import create_client, Client
+from datetime import datetime, timedelta, timezone
+
+
 # 画面のタイトル
 st.title("🐎 競馬AI分析アプリ")
 
@@ -47,3 +52,4 @@ if st.button("分析スタート 🚀"):
             st.success("全てのレースの分析が完了しました！")
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
+
