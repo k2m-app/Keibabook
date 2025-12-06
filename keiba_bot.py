@@ -6,6 +6,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
+
+# ★追加：Supabase 用
 from supabase import create_client, Client
 
 # ==================================================
@@ -27,13 +29,17 @@ SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY", "")
 def get_supabase_client() -> Client:
     """Supabase クライアントを1回だけ作って使い回す"""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-        st.error("Supabase の設定がありません。st.secrets に SUPABASE_URL と SUPABASE_ANON_KEY を追加してください。")
-        st.stop()
+        # app.py 側で None を見てエラーメッセージを出す前提
+        return None
     return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, ai_answer):
     """1レース分のAI出力を Supabase の history テーブルに保存する"""
     supabase = get_supabase_client()
+    if supabase is None:
+        # Supabase 未設定の場合は何もせずスキップ
+        print("⚠ Supabase 未設定のため履歴保存をスキップしました。")
+        return
 
     data = {
         "year": str(year),
@@ -52,12 +58,11 @@ def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, 
     except Exception as e:
         print(f"⚠ 履歴の保存に失敗しました: {e}")
 
-
 # 3. 開催情報（デフォルト値）
-YEAR  = "2025"
-KAI   = "04"
+YEAR = "2025"
+KAI = "04"
 PLACE = "00"
-DAY   = "07"
+DAY = "07"
 
 # ================================
 # 開催情報を外からセットする用の関数
@@ -85,10 +90,10 @@ def run_all_races():
 
     # ▼▼ クラウド用設定（ヘッドレスモード） ▼▼
     options = Options()
-    options.add_argument('--headless')  # 画面を表示しない
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    
+    options.add_argument("--headless")  # 画面を表示しない
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+
     # ドライバー起動
     driver = webdriver.Chrome(options=options)
 
@@ -152,13 +157,13 @@ def run_all_races():
                     continue
 
                 danwa_elements = driver.find_elements(By.CSS_SELECTOR, "td.danwa")
-                
+
                 danwa_list = []
                 for elem in danwa_elements:
                     text = elem.text.strip()
                     if text:
                         danwa_list.append(text)
-                
+
                 text_danwa = "\n".join(danwa_list)
 
                 # -------------------------------------------------------
@@ -168,6 +173,7 @@ def run_all_races():
                 time.sleep(1)
 
                 if "login" in driver.current_url:
+                    print("⚠️ ログインが外れている可能性があります！（前走インタビュー）")
                     continue
 
                 text_interview = driver.find_element(By.TAG_NAME, "body").text
@@ -176,28 +182,28 @@ def run_all_races():
                 full_text = (
                     f"【{place_name} {i}Rのデータ】\n"
                     "■厩舎の話\n" + text_danwa + "\n\n"
-                    "■前走インタビュー（抜粋）\n" + text_interview[:1000] 
+                    "■前走インタビュー（抜粋）\n" + text_interview[:1000]
                 )
 
                 # -------------------------------------------------------
                 # 3. Difyに分析させる
                 # -------------------------------------------------------
                 print(f"🧠 {place_name} {i}Rを分析中...")
-                
+
                 url = "https://api.dify.ai/v1/workflows/run"
                 headers = {
                     "Authorization": f"Bearer {DIFY_API_KEY}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
                 }
                 payload = {
                     "inputs": {"text": full_text},
                     "response_mode": "blocking",
-                    "user": "keiba-bot-user"
+                    "user": "keiba-bot-user",
                 }
 
                 response = requests.post(url, headers=headers, json=payload)
 
-                               if response.status_code == 200:
+                if response.status_code == 200:
                     result = response.json()
                     outputs = result.get("data", {}).get("outputs") or result.get("data") or {}
                     ai_answer = outputs.get("answer")
@@ -206,12 +212,13 @@ def run_all_races():
                         print(f"🎯 {place_name} {i}R 分析完了:")
                         print("-" * 20)
                         print(ai_answer)
-                        # Streamlit画面にも表示する場合
+
+                        # Streamlit画面にも表示
                         st.write(f"### {place_name} {i}R")
                         st.write(ai_answer)
                         st.write("---")
 
-                        # ★ここで履歴を Supabase に保存する
+                        # ★ここで履歴を Supabase に保存
                         save_history(
                             YEAR,           # 例: "2025"
                             KAI,            # 例: "04"
@@ -220,12 +227,11 @@ def run_all_races():
                             DAY,            # 例: "07"
                             race_num_str,   # 例: "01"
                             current_race_id,# 例: "202504000701"
-                            ai_answer       # 予想結果テキスト
+                            ai_answer,      # 予想結果テキスト
                         )
 
                     else:
                         print("⚠️ 分析はできたけど、返事が空っぽでした...")
-
                 else:
                     print(f"❌ {i}Rのエラー: Dify通信失敗 (コード: {response.status_code})")
 
@@ -238,6 +244,3 @@ def run_all_races():
 
 if __name__ == "__main__":
     run_all_races()
-
-
-
