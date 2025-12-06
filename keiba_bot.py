@@ -6,6 +6,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
+from supabase import create_client, Client
 
 # ==================================================
 # 【設定エリア】
@@ -190,3 +191,4 @@ def run_all_races():
 
 if __name__ == "__main__":
     run_all_races()
+
