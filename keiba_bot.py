@@ -13,12 +13,45 @@ from supabase import create_client, Client
 # ==================================================
 
 # 1. ログイン情報（Secretsから取得）
-# 万が一設定がない場合は空文字を入れる
 KEIBA_ID = st.secrets.get("KEIBA_ID", "")
 KEIBA_PASS = st.secrets.get("KEIBA_PASS", "")
 
 # 2. Dify APIキー（Secretsから取得）
 DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
+
+# 3. Supabase の URL と anon key（Secrets から取得）
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
+SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY", "")
+
+@st.cache_resource
+def get_supabase_client() -> Client:
+    """Supabase クライアントを1回だけ作って使い回す"""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        st.error("Supabase の設定がありません。st.secrets に SUPABASE_URL と SUPABASE_ANON_KEY を追加してください。")
+        st.stop()
+    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, ai_answer):
+    """1レース分のAI出力を Supabase の history テーブルに保存する"""
+    supabase = get_supabase_client()
+
+    data = {
+        "year": str(year),
+        "kai": str(kai),
+        "place_code": str(place_code),
+        "place_name": place_name,
+        "day": str(day),
+        "race_num": race_num_str,
+        "race_id": race_id,
+        "output_text": ai_answer,
+    }
+
+    try:
+        supabase.table("history").insert(data).execute()
+        print("💾 履歴を保存しました。")
+    except Exception as e:
+        print(f"⚠ 履歴の保存に失敗しました: {e}")
+
 
 # 3. 開催情報（デフォルト値）
 YEAR  = "2025"
@@ -191,4 +224,5 @@ def run_all_races():
 
 if __name__ == "__main__":
     run_all_races()
+
 
