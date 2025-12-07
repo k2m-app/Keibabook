@@ -9,6 +9,7 @@ from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
+
 # ==================================================
 # 【設定エリア】
 # ==================================================
@@ -24,37 +25,35 @@ DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY", "")
 
-# 4. 開催情報（デフォルト値）
-# 必要に応じて set_race_params で書き換えてください
+# 4. 開催情報（デフォルト）
 YEAR = "2025"
 KAI = "04"
-PLACE = "02"  # 02:中京
-DAY = "02"    # 2日目 (例)
+PLACE = "02"
+DAY = "02"
 
 def set_race_params(year, kai, place, day):
-    """アプリ側から開催設定を書き換える用"""
+    """app.py から開催情報を受け取って上書き"""
     global YEAR, KAI, PLACE, DAY
     YEAR = str(year)
     KAI = str(kai).zfill(2)
     PLACE = str(place).zfill(2)
     DAY = str(day).zfill(2)
 
+
 # ==================================================
-# データベース関連関数 (Supabase)
+# Supabase
 # ==================================================
 @st.cache_resource
 def get_supabase_client() -> Client:
-    """Supabase クライアントを1回だけ作って使い回す"""
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
     return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 
 def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, ai_answer):
-    """1レース分のAI出力を Supabase の history テーブルに保存する"""
     supabase = get_supabase_client()
     if supabase is None:
-        print("⚠ Supabase 未設定のため履歴保存をスキップしました。")
+        print("⚠ Supabase 未設定のため履歴保存スキップ")
         return
 
     data = {
@@ -70,21 +69,16 @@ def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, 
 
     try:
         supabase.table("history").insert(data).execute()
-        print("💾 履歴を保存しました。")
+        print("💾 履歴保存成功")
     except Exception as e:
-        print(f"⚠ 履歴の保存に失敗しました: {e}")
+        print(f"⚠ 履歴保存失敗: {e}")
 
 
 # ==================================================
-# スクレイピング・パース関連関数
+# HTMLパース関数
 # ==================================================
-
 def parse_zenkoso_interview(html: str):
-    """
-    前走インタビューページのHTMLからリストを生成する
-    """
     soup = BeautifulSoup(html, "html.parser")
-    # タイトル周辺からテーブルを探す
     h2 = soup.find("h2", string=lambda s: s and "前走のインタビュー" in s)
     if not h2:
         return []
@@ -97,19 +91,17 @@ def parse_zenkoso_interview(html: str):
     rows = table.tbody.find_all("tr")
     result = []
     i = 0
+
     while i < len(rows):
         row = rows[i]
-        
-        # spacer 行はスキップ
         if "spacer" in (row.get("class") or []):
             i += 1
             continue
 
-        # 枠・馬番・馬名行を判定
         waku_td = row.find("td", class_="waku")
         umaban_td = row.find("td", class_="umaban")
         bamei_td = row.find("td", class_="bamei")
-        
+
         if not (waku_td and umaban_td and bamei_td):
             i += 1
             continue
@@ -118,17 +110,15 @@ def parse_zenkoso_interview(html: str):
         umaban = umaban_td.get_text(strip=True)
         name = bamei_td.get_text(strip=True)
 
-        # 次の行が詳細情報
-        detail_row = rows[i + 1] if i + 1 < len(rows) else None
         prev_date_course = ""
         prev_class = ""
         prev_finish = ""
         prev_comment = ""
 
+        detail_row = rows[i + 1] if i + 1 < len(rows) else None
         if detail_row:
             syoin_td = detail_row.find("td", class_="syoin")
             if syoin_td:
-                # 前走の日付＋コースなど
                 syoindata = syoin_td.find("div", class_="syoindata")
                 if syoindata:
                     ps = syoindata.find_all("p")
@@ -141,12 +131,11 @@ def parse_zenkoso_interview(html: str):
                         if len(spans) >= 2:
                             prev_finish = spans[1].get_text(strip=True)
 
-                # コメント
                 direct_ps = syoin_td.find_all("p", recursive=False)
                 if direct_ps:
-                    comment_text = direct_ps[0].get_text(strip=True)
-                    if comment_text != "－":
-                        prev_comment = comment_text.lstrip("　 ").rstrip()
+                    txt = direct_ps[0].get_text(strip=True)
+                    if txt != "－":
+                        prev_comment = txt
 
         result.append({
             "waku": waku,
@@ -157,8 +146,7 @@ def parse_zenkoso_interview(html: str):
             "prev_finish": prev_finish,
             "prev_comment": prev_comment,
         })
-        
-        # 次の馬へ進める（馬情報の行 + 詳細行 + spacer行があるかも）
+
         i += 2
         if i < len(rows) and "spacer" in (rows[i].get("class") or []):
             i += 1
@@ -167,10 +155,6 @@ def parse_zenkoso_interview(html: str):
 
 
 def parse_danwa_comments(html: str):
-    """
-    厩舎の話ページから馬ごとのコメントを辞書形式で抽出する
-    Key: 馬番(str), Value: コメント(str)
-    """
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_="danwa")
     if not table:
@@ -178,59 +162,49 @@ def parse_danwa_comments(html: str):
 
     danwa_dict = {}
     rows = table.tbody.find_all("tr")
-    
     current_umaban = None
-    
+
     for row in rows:
-        # 1. 馬番・馬名の行を探す
         umaban_td = row.find("td", class_="umaban")
         if umaban_td:
             current_umaban = umaban_td.get_text(strip=True)
             continue
-            
-        # 2. コメントの行を探す（馬番行の直後に来る）
+
         danwa_td = row.find("td", class_="danwa")
         if danwa_td and current_umaban:
-            comment = danwa_td.get_text(strip=True)
-            danwa_dict[current_umaban] = comment
-            current_umaban = None  # 次のためにリセット
+            danwa_dict[current_umaban] = danwa_td.get_text(strip=True)
+            current_umaban = None
 
     return danwa_dict
 
 
 # ==================================================
-# メイン処理
+# メイン処理（★ここが今回の修正版）
 # ==================================================
 def run_all_races(target_races=None):
     """
-    指定されたレース番号のみに対して処理を行う。
-    target_races が None の場合は 1〜12R 全部を対象。
+    target_races = [3, 5, 7] のように渡すと、そのレースだけ実行。
+    None（未指定）の場合は 1〜12R すべて実行。
     """
+
+    # レース番号の決定
+    if target_races is None:
+        race_numbers = list(range(1, 13))
+    else:
+        race_numbers = sorted({int(r) for r in target_races})
+
     base_race_id = f"{YEAR}{KAI}{PLACE}{DAY}"
+
     place_names = {
         "00": "京都", "01": "阪神", "02": "中京", "03": "小倉",
         "04": "東京", "05": "中山", "06": "福島", "07": "新潟",
         "08": "札幌", "09": "函館",
     }
-    place_name = place_names.get(PLACE, "不明な競馬場")
+    place_name = place_names.get(PLACE, "不明")
 
-    # 対象レースのリストを整理
-    if target_races is None:
-        race_numbers = list(range(1, 13))  # デフォルトは全レース
-    else:
-        # 重複除去・ソート・1〜12 の範囲に制限
-        race_numbers = sorted(
-            {int(r) for r in target_races if 1 <= int(r) <= 12}
-        )
+    print(f"🔥 実行レース：{race_numbers}")
 
-    if not race_numbers:
-        print("⚠ 対象レースが指定されていません。処理を中止します。")
-        return
-
-    print(f"🚀 {YEAR}年{KAI}回 {place_name} {DAY}日目のレース攻略を開始します！")
-    print(f"対象レース: {', '.join(f'{r}R' for r in race_numbers)}")
-
-    # ▼▼ クラウド用設定（ヘッドレスモード） ▼▼
+    # Selenium 設定
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
@@ -239,167 +213,129 @@ def run_all_races(target_races=None):
     driver = webdriver.Chrome(options=options)
 
     try:
-        # --- ログイン処理 ---
-        print("🌍 競馬ブックにログイン画面へ移動中...")
+        # ログイン
         driver.get("https://s.keibabook.co.jp/login/login")
 
         WebDriverWait(driver, 10).until(
             EC.visibility_of_element_located((By.NAME, "login_id"))
         ).send_keys(KEIBA_ID)
-        time.sleep(0.5)
 
         WebDriverWait(driver, 10).until(
             EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']"))
         ).send_keys(KEIBA_PASS)
-        time.sleep(0.5)
 
         try:
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, 5).until(
                 EC.element_to_be_clickable((By.CLASS_NAME, "btn-login"))
             ).click()
         except:
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, 5).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='submit']"))
             ).click()
 
-        print("✨ ログイン処理完了")
-        time.sleep(3)
+        time.sleep(2)
 
-        # --- 選択されたレースだけループ処理 ---
+        # ★ターゲットレースのみ実行
         for i in race_numbers:
             race_num_str = f"{i:02}"
             current_race_id = base_race_id + race_num_str
 
-            print("\n" + "=" * 40)
-            print(f"🐎 {place_name} {i}R (ID:{current_race_id}) の情報を収集中...")
+            print(f"\n=== {i}R 開始 ===")
+
+            # 1. 厩舎コメントページ
+            url_danwa = f"https://s.keibabook.co.jp/cyuou/danwa/0/{current_race_id}"
+            driver.get(url_danwa)
+            time.sleep(1)
+
+            if "login" in driver.current_url:
+                print("⚠ ログイン切れ → このレースをスキップ")
+                continue
 
             try:
-                url_danwa = f"https://s.keibabook.co.jp/cyuou/danwa/0/{current_race_id}"
-                url_interview = f"https://s.keibabook.co.jp/cyuou/syoin/{current_race_id}"
+                title_block = WebDriverWait(driver, 5).until(
+                    EC.visibility_of_element_located((By.CSS_SELECTOR, "div.racetitle"))
+                )
+                race_title = title_block.text.strip()
+            except:
+                race_title = f"{place_name} {i}R"
 
-                # -------------------------------------------------------
-                # 1. 厩舎の話ページ取得・パース
-                # -------------------------------------------------------
-                driver.get(url_danwa)
-                time.sleep(1)
+            html_danwa = driver.page_source
+            danwa_data = parse_danwa_comments(html_danwa)
 
-                if "login" in driver.current_url:
-                    print("⚠️ ログインが外れている可能性があります！このレースをスキップします。")
-                    continue
+            # 2. 前走インタビュー
+            url_interview = f"https://s.keibabook.co.jp/cyuou/syoin/{current_race_id}"
+            driver.get(url_interview)
+            time.sleep(1)
 
-                # レース名取得
-                try:
-                    race_title_block = WebDriverWait(driver, 5).until(
-                        EC.visibility_of_element_located((By.CSS_SELECTOR, "div.racetitle"))
+            html_interview = driver.page_source
+            zenkoso_list = parse_zenkoso_interview(html_interview)
+
+            # 3. マージ
+            merged_lines = []
+
+            if not zenkoso_list:
+                merged_lines.append("（データなし）")
+            else:
+                for horse in zenkoso_list:
+                    umaban = horse["umaban"]
+                    name = horse["name"]
+                    danwa = danwa_data.get(umaban, "（厩舎コメントなし）")
+
+                    if horse["prev_date_course"]:
+                        prev_info = f"{horse['prev_date_course']} ({horse['prev_class']}) {horse['prev_finish']}"
+                    else:
+                        prev_info = "（前走情報なし）"
+
+                    prev_comment = horse["prev_comment"] or "（前走談話なし）"
+
+                    block = (
+                        f"▼[枠{horse['waku']} 馬番{umaban}] {name}\n"
+                        f"  【厩舎の話】 {danwa}\n"
+                        f"  【前走情報】 {prev_info}\n"
+                        f"  【前走談話】 {prev_comment}\n"
                     )
-                    race_title_text = race_title_block.text.strip()
-                except:
-                    race_title_text = f"{place_name} {i}R"
+                    merged_lines.append(block)
 
-                # HTMLから厩舎コメントを辞書化
-                html_danwa = driver.page_source
-                danwa_data = parse_danwa_comments(html_danwa)
+            full_text = (
+                f"あなたはプロの競馬予想AIです。以下の{place_name}{i}Rの全頭データを分析し、"
+                f"推奨馬とその根拠、展開予想を行ってください。\n\n"
+                f"■レース情報\n{race_title}\n\n"
+                f"■出走馬詳細データ\n" +
+                "\n".join(merged_lines)
+            )
 
-                # -------------------------------------------------------
-                # 2. 前走インタビューページ取得・パース
-                # -------------------------------------------------------
-                driver.get(url_interview)
-                time.sleep(1)
-                
-                html_interview = driver.page_source
-                zenkoso_list = parse_zenkoso_interview(html_interview)
+            # 4. Dify API 呼び出し
+            payload = {
+                "inputs": {"text": full_text},
+                "response_mode": "blocking",
+                "user": "keiba-bot-user",
+            }
 
-                # -------------------------------------------------------
-                # 3. データを「馬ごと」にマージして構造化テキスト作成
-                # -------------------------------------------------------
-                merged_lines = []
-                
-                if not zenkoso_list:
-                    # 前走情報が取れなかった場合（新馬戦など）のガード
-                    merged_lines.append("（出走馬データの取得に失敗したか、データが存在しません）")
-                else:
-                    for horse in zenkoso_list:
-                        umaban = horse['umaban']
-                        name = horse['name']
-                        
-                        # 厩舎コメントを辞書から引く（なければ「なし」）
-                        danwa_comment = danwa_data.get(umaban, "（厩舎コメントなし）")
-                        
-                        # 前走情報の整形
-                        if horse['prev_date_course']:
-                            prev_info = f"{horse['prev_date_course']} ({horse['prev_class']}) {horse['prev_finish']}"
-                        else:
-                            prev_info = "（前走情報なし）"
-                            
-                        prev_comment = horse['prev_comment'] or "（前走コメントなし）"
+            headers = {
+                "Authorization": f"Bearer {DIFY_API_KEY}",
+                "Content-Type": "application/json",
+            }
 
-                        # 1頭分のブロックを作成
-                        block = (
-                            f"▼[枠{horse['waku']} 馬番{umaban}] {name}\n"
-                            f"  【厩舎の話】 {danwa_comment}\n"
-                            f"  【前走情報】 {prev_info}\n"
-                            f"  【前走談話】 {prev_comment}\n"
-                        )
-                        merged_lines.append(block)
+            res = requests.post("https://api.dify.ai/v1/workflows/run",
+                                headers=headers, json=payload)
 
-                # 最終的なプロンプトテキスト
-                full_text = (
-                    f"あなたはプロの競馬予想AIです。以下の{place_name}{i}Rの全頭データを分析し、"
-                    f"推奨馬とその根拠、展開予想を行ってください。\n\n"
-                    f"■レース情報\n{race_title_text}\n\n"
-                    f"■出走馬詳細データ（全頭分）\n"
-                    + "\n".join(merged_lines)
+            if res.status_code == 200:
+                data = res.json()
+                ai_answer = (
+                    data.get("data", {})
+                        .get("outputs", {})
+                        .get("answer", "")
                 )
 
-                # -------------------------------------------------------
-                # 4. Difyに分析させる
-                # -------------------------------------------------------
-                print(f"🧠 {place_name} {i}Rを分析中...")
+                st.markdown(f"### {place_name} {i}R")
+                st.write(ai_answer)
+                st.write("---")
 
-                url = "https://api.dify.ai/v1/workflows/run"
-                headers = {
-                    "Authorization": f"Bearer {DIFY_API_KEY}",
-                    "Content-Type": "application/json",
-                }
-                payload = {
-                    "inputs": {"text": full_text},
-                    "response_mode": "blocking",
-                    "user": "keiba-bot-user",
-                }
-
-                response = requests.post(url, headers=headers, json=payload)
-
-                if response.status_code == 200:
-                    result = response.json()
-                    outputs = result.get("data", {}).get("outputs") or result.get("data") or {}
-                    ai_answer = outputs.get("answer")
-
-                    if ai_answer:
-                        print(f"🎯 {place_name} {i}R 分析完了（保存します）")
-                        
-                        # Streamlit画面表示
-                        st.markdown(f"### {place_name} {i}R")
-                        st.write(ai_answer)
-                        st.write("---")
-
-                        # Supabaseへ保存
-                        save_history(
-                            YEAR, KAI, PLACE, place_name, DAY,
-                            race_num_str, current_race_id, ai_answer
-                        )
-                    else:
-                        print("⚠️ 分析結果が空でした。")
-                else:
-                    print(f"❌ Dify通信エラー: {response.status_code} - {response.text}")
-
-            except Exception as e:
-                print(f"❌ {i}R処理中に予期せぬエラー: {e}")
+                save_history(YEAR, KAI, PLACE, place_name, DAY,
+                             race_num_str, current_race_id, ai_answer)
+            else:
+                print(f"❌ Dify エラー: {res.status_code} {res.text}")
 
     finally:
-        print("\n🧹 ブラウザを閉じます")
+        print("\n🧹 ブラウザ終了")
         driver.quit()
-
-
-if __name__ == "__main__":
-    # スクリプト単体で実行したときは全レース対象
-    run_all_races()
