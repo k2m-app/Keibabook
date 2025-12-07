@@ -28,9 +28,16 @@ SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY", "")
 # 必要に応じて set_race_params で書き換えてください
 YEAR = "2025"
 KAI = "04"
-PLACE = "02" # 02:中京
-DAY = "02"   # 2日目 (例として変更)
+PLACE = "02"  # 02:中京
+DAY = "02"    # 2日目 (例)
 
+def set_race_params(year, kai, place, day):
+    """アプリ側から開催設定を書き換える用"""
+    global YEAR, KAI, PLACE, DAY
+    YEAR = str(year)
+    KAI = str(kai).zfill(2)
+    PLACE = str(place).zfill(2)
+    DAY = str(day).zfill(2)
 
 # ==================================================
 # データベース関連関数 (Supabase)
@@ -161,7 +168,7 @@ def parse_zenkoso_interview(html: str):
 
 def parse_danwa_comments(html: str):
     """
-    【新規追加】厩舎の話ページから馬ごとのコメントを辞書形式で抽出する
+    厩舎の話ページから馬ごとのコメントを辞書形式で抽出する
     Key: 馬番(str), Value: コメント(str)
     """
     soup = BeautifulSoup(html, "html.parser")
@@ -186,7 +193,7 @@ def parse_danwa_comments(html: str):
         if danwa_td and current_umaban:
             comment = danwa_td.get_text(strip=True)
             danwa_dict[current_umaban] = comment
-            current_umaban = None # 次のためにリセット
+            current_umaban = None  # 次のためにリセット
 
     return danwa_dict
 
@@ -194,7 +201,11 @@ def parse_danwa_comments(html: str):
 # ==================================================
 # メイン処理
 # ==================================================
-def run_all_races():
+def run_all_races(target_races=None):
+    """
+    指定されたレース番号のみに対して処理を行う。
+    target_races が None の場合は 1〜12R 全部を対象。
+    """
     base_race_id = f"{YEAR}{KAI}{PLACE}{DAY}"
     place_names = {
         "00": "京都", "01": "阪神", "02": "中京", "03": "小倉",
@@ -203,7 +214,21 @@ def run_all_races():
     }
     place_name = place_names.get(PLACE, "不明な競馬場")
 
-    print(f"🚀 {YEAR}年{KAI}回 {place_name} {DAY}日目の全レース攻略を開始します！")
+    # 対象レースのリストを整理
+    if target_races is None:
+        race_numbers = list(range(1, 13))  # デフォルトは全レース
+    else:
+        # 重複除去・ソート・1〜12 の範囲に制限
+        race_numbers = sorted(
+            {int(r) for r in target_races if 1 <= int(r) <= 12}
+        )
+
+    if not race_numbers:
+        print("⚠ 対象レースが指定されていません。処理を中止します。")
+        return
+
+    print(f"🚀 {YEAR}年{KAI}回 {place_name} {DAY}日目のレース攻略を開始します！")
+    print(f"対象レース: {', '.join(f'{r}R' for r in race_numbers)}")
 
     # ▼▼ クラウド用設定（ヘッドレスモード） ▼▼
     options = Options()
@@ -240,8 +265,8 @@ def run_all_races():
         print("✨ ログイン処理完了")
         time.sleep(3)
 
-        # --- 1Rから12Rまでループ処理 ---
-        for i in range(1, 13):
+        # --- 選択されたレースだけループ処理 ---
+        for i in race_numbers:
             race_num_str = f"{i:02}"
             current_race_id = base_race_id + race_num_str
 
@@ -259,7 +284,7 @@ def run_all_races():
                 time.sleep(1)
 
                 if "login" in driver.current_url:
-                    print("⚠️ ログインが外れている可能性があります！スキップします。")
+                    print("⚠️ ログインが外れている可能性があります！このレースをスキップします。")
                     continue
 
                 # レース名取得
@@ -376,6 +401,5 @@ def run_all_races():
 
 
 if __name__ == "__main__":
-    # Streamlitで起動する場合、ボタンなどで発火させると管理しやすいですが
-    # ここではスクリプト実行時に即走る構成にしています
+    # スクリプト単体で実行したときは全レース対象
     run_all_races()
