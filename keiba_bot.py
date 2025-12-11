@@ -31,6 +31,7 @@ KAI = "04"
 PLACE = "02"
 DAY = "02"
 
+
 def set_race_params(year, kai, place, day):
     """app.py から開催情報を受け取って上書き"""
     global YEAR, KAI, PLACE, DAY
@@ -78,6 +79,7 @@ def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, 
 # HTMLパース関数
 # ==================================================
 def parse_zenkoso_interview(html: str):
+    """前走インタビュー（syoinページ）のパース"""
     soup = BeautifulSoup(html, "html.parser")
     h2 = soup.find("h2", string=lambda s: s and "前走のインタビュー" in s)
     if not h2:
@@ -155,9 +157,10 @@ def parse_zenkoso_interview(html: str):
 
 
 def parse_danwa_comments(html: str):
+    """厩舎の話（danwaテーブル）のパース"""
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_="danwa")
-    if not table:
+    if not table or not table.tbody:
         return {}
 
     danwa_dict = {}
@@ -178,8 +181,65 @@ def parse_danwa_comments(html: str):
     return danwa_dict
 
 
+# ★★★ 新規追加：調教ページのパース ★★★
+def parse_cyokyo(html: str):
+    """
+    調教ページ（/cyokyo/）から、馬番ごとの調教テキストを抽出して dict で返す。
+
+    戻り値:
+        { "1": "調教テキスト...", "2": "調教テキスト...", ... }
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    section = soup.find("div", class_="section")
+    if not section:
+        return {}
+
+    # section 内の table（あれば）を優先。なければ section 全体から tr を拾う
+    table = section.find("table")
+    if table and table.tbody:
+        rows = table.tbody.find_all("tr")
+    else:
+        rows = section.find_all("tr")
+
+    cyokyo_dict = {}
+    current_umaban = None
+    buffer_lines = []
+
+    for row in rows:
+        waku_td = row.find("td", class_="waku")
+        umaban_td = row.find("td", class_="umaban")
+        bamei_td = row.find("td", class_="bamei")
+
+        # 枠・馬番・馬名が揃っている行を「1頭分の先頭」とみなす
+        if waku_td and umaban_td and bamei_td:
+            # 直前までの馬を確定
+            if current_umaban is not None and buffer_lines:
+                cyokyo_dict[current_umaban] = " ".join(buffer_lines).strip()
+
+            current_umaban = umaban_td.get_text(strip=True)
+            buffer_lines = []
+
+            # 先頭行のテキストも格納（馬名・短評など）
+            tds_text = " ".join(td.get_text(" ", strip=True) for td in row.find_all("td"))
+            if tds_text:
+                buffer_lines.append(tds_text)
+        else:
+            # 同じ馬に紐づく調教行
+            if current_umaban is not None:
+                txt = row.get_text(" ", strip=True)
+                if txt:
+                    buffer_lines.append(txt)
+
+    # 最後の馬を確定
+    if current_umaban is not None and buffer_lines:
+        cyokyo_dict[current_umaban] = " ".join(buffer_lines).strip()
+
+    return cyokyo_dict
+
+
 # ==================================================
-# メイン処理（★ここが今回の修正版）
+# メイン処理
 # ==================================================
 def run_all_races(target_races=None):
     """
@@ -270,7 +330,15 @@ def run_all_races(target_races=None):
             html_interview = driver.page_source
             zenkoso_list = parse_zenkoso_interview(html_interview)
 
-            # 3. マージ
+            # 3. 調教ページ
+            url_cyokyo = f"https://s.keibabook.co.jp/cyuou/cyokyo/0/{current_race_id}"
+            driver.get(url_cyokyo)
+            time.sleep(1)
+
+            html_cyokyo = driver.page_source
+            cyokyo_dict = parse_cyokyo(html_cyokyo)
+
+            # 4. マージ
             merged_lines = []
 
             if not zenkoso_list:
@@ -279,7 +347,7 @@ def run_all_races(target_races=None):
                 for horse in zenkoso_list:
                     umaban = horse["umaban"]
                     name = horse["name"]
-                    danwa = danwa_data.get(umaban, "（厩舎コメントなし）")
+                    danwa = danwa_data.get(umaban, "（厩舎の話なし）")
 
                     if horse["prev_date_course"]:
                         prev_info = f"{horse['prev_date_course']} ({horse['prev_class']}) {horse['prev_finish']}"
@@ -288,23 +356,28 @@ def run_all_races(target_races=None):
 
                     prev_comment = horse["prev_comment"] or "（前走談話なし）"
 
+                    # ★ 調教情報を追加
+                    cyokyo_text = cyokyo_dict.get(umaban, "（調教情報なし）")
+
                     block = (
                         f"▼[枠{horse['waku']} 馬番{umaban}] {name}\n"
                         f"  【厩舎の話】 {danwa}\n"
                         f"  【前走情報】 {prev_info}\n"
                         f"  【前走談話】 {prev_comment}\n"
+                        f"  【調教】 {cyokyo_text}\n"
                     )
                     merged_lines.append(block)
 
             full_text = (
-                f"あなたはプロの競馬予想AIです。以下の{place_name}{i}Rの全頭データを分析し、"
-                f"推奨馬とその根拠、展開予想を行ってください。\n\n"
+                f"以下は{place_name}{i}Rの全頭データである。"
+                f"各馬について【厩舎の話】【前走情報・前走談話】【調教】を基に、"
+                f"先に与えられたSYSTEMプロンプトのルールに従って分析せよ。\n\n"
                 f"■レース情報\n{race_title}\n\n"
                 f"■出走馬詳細データ\n" +
                 "\n".join(merged_lines)
             )
 
-            # 4. Dify API 呼び出し
+            # 5. Dify API 呼び出し
             payload = {
                 "inputs": {"text": full_text},
                 "response_mode": "blocking",
@@ -316,15 +389,18 @@ def run_all_races(target_races=None):
                 "Content-Type": "application/json",
             }
 
-            res = requests.post("https://api.dify.ai/v1/workflows/run",
-                                headers=headers, json=payload)
+            res = requests.post(
+                "https://api.dify.ai/v1/workflows/run",
+                headers=headers,
+                json=payload
+            )
 
             if res.status_code == 200:
                 data = res.json()
                 ai_answer = (
                     data.get("data", {})
-                        .get("outputs", {})
-                        .get("answer", "")
+                    .get("outputs", {})
+                    .get("answer", "")
                 )
 
                 st.markdown(f"### {place_name} {i}R")
