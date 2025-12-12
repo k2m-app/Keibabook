@@ -95,13 +95,38 @@ if mode == "予想する":
     place_name = st.sidebar.selectbox("競馬場 (PLACE)", list(places.values()), index=4)  # デフォルト東京
     place_code = [k for k, v in places.items() if v == place_name][0]
 
-    # ★どのレースを分析するか選ぶ（チェックボックス）
-    st.sidebar.header("分析するレースを選択")
-    selected_races = []
-    for i in range(1, 13):
-        # デフォルトで 1R だけ ON
-        if st.sidebar.checkbox(f"{i}R", value=(i == 1)):
-            selected_races.append(i)
+   # ★どのレースを分析するか選ぶ（チェックボックス）
+st.sidebar.header("分析するレースを選択")
+
+# 初期化（初回のみ）
+if "race_checks" not in st.session_state:
+    st.session_state.race_checks = {i: (i == 1) for i in range(1, 13)}
+
+# --- 全選択 / 全解除ボタン ---
+col1, col2 = st.sidebar.columns(2)
+
+with col1:
+    if st.button("全レース選択"):
+        for i in range(1, 13):
+            st.session_state.race_checks[i] = True
+
+with col2:
+    if st.button("全解除"):
+        for i in range(1, 13):
+            st.session_state.race_checks[i] = False
+
+# --- チェックボックス表示 ---
+selected_races = []
+for i in range(1, 13):
+    checked = st.sidebar.checkbox(
+        f"{i}R",
+        value=st.session_state.race_checks[i],
+        key=f"race_{i}"
+    )
+    st.session_state.race_checks[i] = checked
+    if checked:
+        selected_races.append(i)
+
 
     # --- メイン画面 ---
     st.write(f"### 設定: {year}年 {kai}回 {place_name} {day}日目")
@@ -128,3 +153,4 @@ if mode == "予想する":
 
 elif mode == "直近1週間の履歴を見る":
     show_history()
+
