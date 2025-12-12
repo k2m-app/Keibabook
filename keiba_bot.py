@@ -89,12 +89,13 @@ def save_history(
 
 
 # ==================================================
-# Dify 呼び出し
+# Dify 呼び出し（ステータスに関わらず、中身を優先）
 # ==================================================
 def call_dify(full_text: str) -> Optional[Dict]:
     """
     Dify Workflow を叩いて JSON を返す。
-    非 2xx や例外時は最大 2 回リトライ。UI には詳細は出さない。
+    HTTPステータスはログに出すだけで、
+    とにかく JSON が取れたらそれを返す。
     """
     payload = {
         "inputs": {"text": full_text},
@@ -106,6 +107,8 @@ def call_dify(full_text: str) -> Optional[Dict]:
         "Content-Type": "application/json",
     }
 
+    last_error: Optional[Exception] = None
+
     for attempt in range(2):  # 最大2回トライ
         try:
             res = requests.post(
@@ -114,31 +117,25 @@ def call_dify(full_text: str) -> Optional[Dict]:
                 json=payload,
                 timeout=600,
             )
-        except Exception as e:
-            # ネットワーク等の例外
-            print("Dify request error:", e)
-            if attempt == 0:
-                time.sleep(3)
-                continue
-            return None
+            print("Dify status:", res.status_code)  # ログ用（画面には出ない）
 
-        if 200 <= res.status_code < 300:
             try:
-                return res.json()
+                result = res.json()
+                return result
             except Exception as e:
                 print("Dify JSON decode error:", e)
+                last_error = e
                 if attempt == 0:
                     time.sleep(3)
                     continue
-                return None
+        except Exception as e:
+            print("Dify request error:", e)
+            last_error = e
+            if attempt == 0:
+                time.sleep(3)
+                continue
 
-        # 非2xxの場合
-        print("Dify non-2xx:", res.status_code, res.text[:200])
-        if attempt == 0:
-            time.sleep(3)
-            continue
-        return None
-
+    print("Dify call failed finally:", last_error)
     return None
 
 
