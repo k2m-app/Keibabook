@@ -25,6 +25,7 @@ KAI = "04"
 PLACE = "02"
 DAY = "02"
 
+
 def set_race_params(year, kai, place, day):
     global YEAR, KAI, PLACE, DAY
     YEAR = str(year)
@@ -68,7 +69,7 @@ def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, 
 
 
 # ==================================================
-# HTML パース
+# HTML パース（前走インタビュー）
 # ==================================================
 def parse_zenkoso_interview(html: str):
     soup = BeautifulSoup(html, "html.parser")
@@ -144,6 +145,9 @@ def parse_zenkoso_interview(html: str):
     return result
 
 
+# ==================================================
+# HTML パース（厩舎の話）
+# ==================================================
 def parse_danwa_comments(html: str):
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_="danwa")
@@ -171,20 +175,29 @@ def parse_danwa_comments(html: str):
 # ★ 調教ページ パース（完全版）
 # ==================================================
 def parse_cyokyo(html: str):
+    """
+    調教ページのHTMLから
+    { "馬番": "整形済みテキスト" } のdictを返す
+    """
     soup = BeautifulSoup(html, "html.parser")
     cyokyo_dict = {}
 
+    # ① 「調教」セクションを特定
+    section = None
     h2 = soup.find("h2", string=lambda s: s and "調教" in s)
     if h2:
-        root = h2.find_parent("div")
-        section = root.find_next_sibling("div", class_="section")
-    else:
+        midasi_div = h2.find_parent("div", class_="midasi")
+        if midasi_div:
+            section = midasi_div.find_next_sibling("div", class_="section")
+
+    if section is None:
+        # 念のためフォールバック
         section = soup
 
-    if not section:
-        return {}
-
+    # ② section 内の table.cyokyo をすべて列挙
     tables = section.find_all("table", class_="cyokyo")
+    print("★DEBUG table.cyokyo 個数:", len(tables))
+
     for tbl in tables:
         tbody = tbl.find("tbody")
         if not tbody:
@@ -194,25 +207,33 @@ def parse_cyokyo(html: str):
         if not rows:
             continue
 
+        # 1行目 = ヘッダ（枠番・馬番・馬名・短評・矢印）
         header = rows[0]
         uma_td = header.find("td", class_="umaban")
-        if not uma_td:
+        name_td = header.find("td", class_="kbamei")
+
+        # 馬番・馬名が取れないテーブルはスキップ
+        if not uma_td or not name_td:
             continue
 
         umaban = uma_td.get_text(strip=True)
+        bamei = name_td.get_text(" ", strip=True)
 
-        header_text = " ".join(
-            td.get_text(" ", strip=True)
-            for td in header.find_all("td")
-        )
+        tanpyo_td = header.find("td", class_="tanpyo")
+        tanpyo = tanpyo_td.get_text(strip=True) if tanpyo_td else ""
 
+        # 2行目 = 調教詳細（dl + table.cyokyodata 等）
+        detail_row = rows[1] if len(rows) >= 2 else None
         detail_text = ""
-        if len(rows) >= 2:
-            detail_text = rows[1].get_text(" ", strip=True)
+        if detail_row:
+            # 行内のテキストをすべて空白区切りで連結
+            detail_text = detail_row.get_text(" ", strip=True)
 
-        final_text = " ".join([header_text, detail_text]).strip()
+        # 好きな形に整形（ここを好みで変えてOK）
+        final_text = f"【馬名】{bamei}（馬番{umaban}） 【短評】{tanpyo} 【調教詳細】{detail_text}"
         cyokyo_dict[umaban] = final_text
 
+    print("★DEBUG 調教 dict keys:", list(cyokyo_dict.keys()))
     return cyokyo_dict
 
 
@@ -221,15 +242,21 @@ def parse_cyokyo(html: str):
 # ==================================================
 BASE_URL = "https://s.keibabook.co.jp"
 
+
 def fetch_cyokyo_dict(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/cyokyo/0/{race_id}"
+    print("★DEBUG 調教ページ URL:", url)
     driver.get(url)
 
     try:
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "table.cyokyo"))
         )
-    except:
+    except Exception as e:
+        print("❌ WebDriverWaitで table.cyokyo が見つからず:", e)
+        print("current_url:", driver.current_url)
+        src_head = driver.page_source[:2000]
+        print("page_source 冒頭(2000文字):\n", src_head)
         return {}
 
     html = driver.page_source
@@ -287,21 +314,25 @@ def run_all_races(target_races=None):
             race_num = f"{r:02}"
             race_id = base_id + race_num
 
-            print(f"\n=== {r}R ===")
+            print(f"\n=== {place_name} {r}R ({race_id}) ===")
 
             # 厩舎コメント
             url_danwa = f"https://s.keibabook.co.jp/cyuou/danwa/0/{race_id}"
+            print("★DEBUG 厩舎コメント URL:", url_danwa)
             driver.get(url_danwa)
             time.sleep(1)
 
             html_danwa = driver.page_source
             danwa_dict = parse_danwa_comments(html_danwa)
+            print("★DEBUG 厩舎コメント dict keys:", list(danwa_dict.keys()))
 
             # 前走インタビュー
             url_inter = f"https://s.keibabook.co.jp/cyuou/syoin/{race_id}"
+            print("★DEBUG 前走インタビュー URL:", url_inter)
             driver.get(url_inter)
             time.sleep(1)
             zenkoso = parse_zenkoso_interview(driver.page_source)
+            print("★DEBUG 前走インタビュー頭数:", len(zenkoso))
 
             # 調教
             cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
