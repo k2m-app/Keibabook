@@ -8,7 +8,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
-
+from bs4 import Tag
 
 # ==================================================
 # 【設定エリア】
@@ -76,7 +76,7 @@ def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, 
 
 
 # ==================================================
-# HTMLパース関数
+# HTMLパース関数（前走インタビュー）
 # ==================================================
 def parse_zenkoso_interview(html: str):
     """前走インタビュー（syoinページ）のパース"""
@@ -156,6 +156,9 @@ def parse_zenkoso_interview(html: str):
     return result
 
 
+# ==================================================
+# HTMLパース関数（厩舎の話）
+# ==================================================
 def parse_danwa_comments(html: str):
     """厩舎の話（danwaテーブル）のパース"""
     soup = BeautifulSoup(html, "html.parser")
@@ -181,7 +184,9 @@ def parse_danwa_comments(html: str):
     return danwa_dict
 
 
-# ★★★ 新規追加：調教ページのパース ★★★
+# ==================================================
+# HTMLパース関数（調教）
+# ==================================================
 def parse_cyokyo(html: str):
     """
     調教ページ（/cyokyo/）から、馬番ごとの調教テキストを抽出して dict で返す。
@@ -191,49 +196,52 @@ def parse_cyokyo(html: str):
     """
     soup = BeautifulSoup(html, "html.parser")
 
+    # 調教コンテンツ全体
     section = soup.find("div", class_="section")
     if not section:
         return {}
 
-    # section 内の table（あれば）を優先。なければ section 全体から tr を拾う
-    table = section.find("table")
-    if table and table.tbody:
-        rows = table.tbody.find_all("tr")
-    else:
-        rows = section.find_all("tr")
-
     cyokyo_dict = {}
-    current_umaban = None
-    buffer_lines = []
 
-    for row in rows:
+    # section 内の全ての tr から
+    # 「枠番（waku）＋ 馬番（umaban）＋ 馬名（kbamei）」が揃う行を
+    # 1頭分の先頭行とみなす
+    for row in section.find_all("tr"):
         waku_td = row.find("td", class_="waku")
         umaban_td = row.find("td", class_="umaban")
-        bamei_td = row.find("td", class_="bamei")
+        name_td = row.find("td", class_="kbamei")  # ★ 調教ページは kbamei
 
-        # 枠・馬番・馬名が揃っている行を「1頭分の先頭」とみなす
-        if waku_td and umaban_td and bamei_td:
-            # 直前までの馬を確定
-            if current_umaban is not None and buffer_lines:
-                cyokyo_dict[current_umaban] = " ".join(buffer_lines).strip()
+        if not (waku_td and umaban_td and name_td):
+            continue
 
-            current_umaban = umaban_td.get_text(strip=True)
-            buffer_lines = []
+        umaban = umaban_td.get_text(strip=True)
 
-            # 先頭行のテキストも格納（馬名・短評など）
-            tds_text = " ".join(td.get_text(" ", strip=True) for td in row.find_all("td"))
-            if tds_text:
-                buffer_lines.append(tds_text)
-        else:
-            # 同じ馬に紐づく調教行
-            if current_umaban is not None:
-                txt = row.get_text(" ", strip=True)
-                if txt:
-                    buffer_lines.append(txt)
+        # 先頭行（枠番／馬番／馬名／短評など）
+        header_text = " ".join(
+            td.get_text(" ", strip=True)
+            for td in row.find_all("td")
+            if td.get_text(strip=True)
+        )
 
-    # 最後の馬を確定
-    if current_umaban is not None and buffer_lines:
-        cyokyo_dict[current_umaban] = " ".join(buffer_lines).strip()
+        texts = []
+        if header_text:
+            texts.append(header_text)
+
+        # 直後の兄弟 tr が、この馬の調教詳細（colspan=5 の行）
+        detail_row = row.next_sibling
+        while detail_row is not None and not isinstance(detail_row, Tag):
+            detail_row = detail_row.next_sibling
+
+        if isinstance(detail_row, Tag) and detail_row.name == "tr":
+            detail_text = detail_row.get_text(" ", strip=True)
+            if detail_text:
+                texts.append(detail_text)
+
+        if texts:
+            cyokyo_dict[umaban] = " ".join(texts).strip()
+
+    # デバッグしたいとき用
+    # print("DEBUG cyokyo_dict keys:", list(cyokyo_dict.keys()))
 
     return cyokyo_dict
 
