@@ -344,6 +344,31 @@ def fetch_cyokyo_dict(driver: webdriver.Chrome, race_id: str) -> Dict[str, str]:
 
     return parse_cyokyo(driver.page_source)
 
+def shrink_horse_blocks(
+    blocks,
+    per_horse_limit=450,   # 1頭あたり最大文字数（18頭でも安全）
+    total_limit=13000      # 全体の最大文字数（Dify が安定して処理可能）
+):
+    """
+    blocks: 馬ごとのテキストリスト（merged）
+    各馬の文章を短くしつつ、全体の文字数も安全範囲に収める
+    """
+    shrunk = []
+
+    # まず各馬を適切な長さに切る
+    for b in blocks:
+        if len(b) > per_horse_limit:
+            b = b[:per_horse_limit] + "\n（※この馬のコメントは長いため一部省略）\n"
+        shrunk.append(b)
+
+    # 一旦結合
+    combined = "\n".join(shrunk)
+
+    # 全体が大きすぎる場合さらにカット
+    if len(combined) > total_limit:
+        combined = combined[:total_limit] + "\n（※データ量の都合で一部省略しています）\n"
+
+    return combined
 
 # ==================================================
 # メイン処理
@@ -426,39 +451,49 @@ def run_all_races(target_races=None):
                 # 3) 調教
                 cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
 
-                # 4) 馬ごとにマージ
-                merged: List[str] = []
-                for h in zenkoso:
-                    uma = h["umaban"]
-                    text = (
-                        f"▼[枠{h['waku']} 馬番{uma}] {h['name']}\n"
-                        f"  【厩舎の話】 {danwa_dict.get(uma, '（厩舎コメントなし）')}\n"
-                        f"  【前走情報】 {h['prev_date_course']} ({h['prev_class']}) {h['prev_finish']}\n"
-                        f"  【前走談話】 {h['prev_comment'] or '（前走談話なし）'}\n"
-                        f"  【調教】 {cyokyo_dict.get(uma, '（調教情報なし）')}\n"
-                    )
-                    merged.append(text)
+     # 4) 馬ごとにマージ（1頭ずつテキスト化）
+merged = []
+for h in zenkoso:
+    uma = h["umaban"]
+    text = (
+        f"▼[枠{h['waku']} 馬番{uma}] {h['name']}\n"
+        f"  【厩舎の話】 {danwa_dict.get(uma, '（厩舎コメントなし）')}\n"
+        f"  【前走情報】 {h['prev_date_course']} ({h['prev_class']}) {h['prev_finish']}\n"
+        f"  【前走談話】 {h['prev_comment'] or '（前走談話なし）'}\n"
+        f"  【調教】 {cyokyo_dict.get(uma, '（調教情報なし）')}\n"
+    )
+    merged.append(text)
 
-                # 5) レース情報テキスト
-                race_header_lines: List[str] = []
-                if race_info["date_meet"]:
-                    race_header_lines.append(race_info["date_meet"])
-                if race_info["race_name"]:
-                    race_header_lines.append(race_info["race_name"])
-                if race_info["cond1"]:
-                    race_header_lines.append(race_info["cond1"])
-                if race_info["course_line"]:
-                    race_header_lines.append(race_info["course_line"])
-                race_header = "\n".join(race_header_lines)
+# 4.5) テキスト圧縮（メインレース対策 / 18頭前提）
+merged_text = shrink_horse_blocks(
+    merged,
+    per_horse_limit=450,   # ← 18頭でも約8100文字
+    total_limit=13000      # ← 全体で安全範囲
+)
 
-                full_text = (
-                    "■レース情報\n"
-                    f"{race_header}\n\n"
-                    f"以下は{place_name}{r}Rの全頭データである。"
-                    "各馬について【厩舎の話】【前走情報・前走談話】【調教】を基に分析せよ。\n\n"
-                    "■出走馬詳細データ\n"
-                    + "\n".join(merged)
-                )
+# 5) レース情報を整形
+race_header_lines = []
+if race_info["date_meet"]:
+    race_header_lines.append(race_info["date_meet"])
+if race_info["race_name"]:
+    race_header_lines.append(race_info["race_name"])
+if race_info["cond1"]:
+    race_header_lines.append(race_info["cond1"])
+if race_info["course_line"]:
+    race_header_lines.append(race_info["course_line"])
+
+race_header = "\n".join(race_header_lines)
+
+# 6) 最終テキストとして結合（ここは長くならない）
+full_text = (
+    "■レース情報\n"
+    f"{race_header}\n\n"
+    f"以下は{place_name}{r}Rの全頭データである。\n"
+    "各馬について【厩舎の話】【前走情報・前走談話】【調教】を基に分析せよ。\n\n"
+    "■出走馬詳細データ\n"
+    + merged_text
+)
+
 
                 # 6) Dify Workflow 呼び出し
                 result = call_dify(full_text)
@@ -505,4 +540,5 @@ def run_all_races(target_races=None):
 
     finally:
         driver.quit()
+
 
