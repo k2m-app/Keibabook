@@ -24,7 +24,6 @@ def show_history():
         st.info("streamlit の Secrets に SUPABASE_URL と SUPABASE_ANON_KEY を追加してください。")
         return
 
-    # 7日前の日時（UTC）を計算して、それ以降のデータだけを取得
     seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
     seven_days_ago_iso = seven_days_ago.isoformat()
 
@@ -48,7 +47,6 @@ def show_history():
         st.info("直近1週間の履歴はまだありません。")
         return
 
-    # 1件ずつ、折りたたみ形式で表示
     for row in rows:
         title = f"{row.get('created_at', '')} / {row.get('place_name', '')} {row.get('race_num', '')}R"
         with st.expander(title):
@@ -65,93 +63,56 @@ def show_history():
             st.write(row.get("output_text", ""))
 
 
-# 画面のタイトル
 st.title("🐎 競馬AI分析アプリ")
-
-# ★予想モード or 履歴モードを選ぶ
 mode = st.sidebar.radio("メニュー", ["予想する", "直近1週間の履歴を見る"])
 
 if mode == "予想する":
-    # --- サイドバーで設定 ---
     st.sidebar.header("開催設定")
 
-    # 入力フォーム
     year = st.sidebar.text_input("年 (YEAR)", "2025")
 
-    # 01〜06までのリストを作成
     kai_options = [f"{i:02}" for i in range(1, 7)]
-    kai = st.sidebar.selectbox("回 (KAI)", kai_options, index=3)  # デフォルト04
+    kai = st.sidebar.selectbox("回 (KAI)", kai_options, index=3)
 
-    # 01〜12までのリストを作成
     day_options = [f"{i:02}" for i in range(1, 13)]
-    day = st.sidebar.selectbox("日目 (DAY)", day_options, index=6)  # デフォルト07
+    day = st.sidebar.selectbox("日目 (DAY)", day_options, index=6)
 
-    # 場所コードの選択肢
     places = {
         "00": "京都", "01": "阪神", "02": "中京", "03": "小倉",
         "04": "東京", "05": "中山", "06": "福島", "07": "新潟",
         "08": "札幌", "09": "函館"
     }
-    place_name = st.sidebar.selectbox("競馬場 (PLACE)", list(places.values()), index=4)  # デフォルト東京
+    place_name = st.sidebar.selectbox("競馬場 (PLACE)", list(places.values()), index=4)
     place_code = [k for k, v in places.items() if v == place_name][0]
 
-    # ★どのレースを分析するか選ぶ（チェックボックス）
     st.sidebar.header("分析するレースを選択")
 
-    # 初期化（初回のみ）
-    if "race_checks" not in st.session_state:
-        st.session_state.race_checks = {i: (i == 1) for i in range(1, 13)}
+    # ✅ checkbox の key そのものを初期化（初回だけ）
+    for i in range(1, 13):
+        k = f"race_{i}"
+        if k not in st.session_state:
+            st.session_state[k] = (i == 1)  # 初期は1RだけON
 
-    # on_click 用のコールバック
+    # ✅ ボタン：checkboxキーを直接書き換える
     def select_all_races():
         for i in range(1, 13):
-            st.session_state.race_checks[i] = True
+            st.session_state[f"race_{i}"] = True
 
     def clear_all_races():
         for i in range(1, 13):
-            st.session_state.race_checks[i] = False
+            st.session_state[f"race_{i}"] = False
 
-    # --- 全選択 / 全解除ボタン ---
     col1, col2 = st.sidebar.columns(2)
     with col1:
         st.button("全レース選択", on_click=select_all_races)
     with col2:
         st.button("全解除", on_click=clear_all_races)
 
-    # --- チェックボックス表示 ---
+    # checkbox表示（valueは不要。keyのstateが使われる）
     selected_races = []
     for i in range(1, 13):
-        checked = st.sidebar.checkbox(
-            f"{i}R",
-            value=st.session_state.race_checks[i],
-            key=f"race_{i}"
-        )
-        st.session_state.race_checks[i] = checked
-        if checked:
+        if st.sidebar.checkbox(f"{i}R", key=f"race_{i}"):
             selected_races.append(i)
 
-    # --- メイン画面 ---
     st.write(f"### 設定: {year}年 {kai}回 {place_name} {day}日目")
-    st.write("サイドバーでレースを選んでから、ボタンを押すと分析を開始します。")
-
-    # ボタンが押されたら実行
-    if st.button("分析スタート 🚀"):
-        if not selected_races:
-            st.warning("少なくとも1つのレースを選んでください。")
-        else:
-            with st.spinner("分析中...これには数分かかります..."):
-                try:
-                    # 1. 設定値をbotに渡す
-                    keiba_bot.set_race_params(year, kai, place_code, day)
-
-                    # 2. 選択されたレースだけ実行する
-                    keiba_bot.run_all_races(target_races=selected_races)
-
-                    st.success(
-                        f"{', '.join(f'{r}R' for r in selected_races)} の分析が完了しました！"
-                    )
-                except Exception as e:
-                    st.error(f"エラーが発生しました: {e}")
-
-elif mode == "直近1週間の履歴を見る":
-    show_history()
+    st.write("サイドバーでレースを選んでから、ボタンを押すと分析を開始します。
