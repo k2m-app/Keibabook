@@ -307,41 +307,6 @@ def fetch_cyokyo_dict(driver, race_id: str):
 
 
 # ==================================================
-# テキスト圧縮（Dify 安定用）
-# ==================================================
-def shrink_horse_blocks(blocks, is_main_race=False):
-    """
-    blocks: 馬ごとのテキストリスト（merged）
-    is_main_race: メインレース（11R など）のとき True
-
-    メインレースはかなりきつめにカットして Dify への入力を安定させる。
-    """
-    # レースごとの上限設定
-    if is_main_race or len(blocks) >= 16:
-        # メイン想定：頭数もコメントも濃いので強めに圧縮
-        per_horse_limit = 250    # 1頭あたり最大 250 文字
-        total_limit = 7000       # 全体 7000 文字まで
-    else:
-        # それ以外のレースは少しゆるめ
-        per_horse_limit = 380    # 1頭あたり最大 380 文字
-        total_limit = 11000      # 全体 11000 文字まで
-
-    shrunk = []
-
-    for b in blocks:
-        if len(b) > per_horse_limit:
-            b = b[:per_horse_limit] + "\n（※この馬のコメントは長いため一部省略）\n"
-        shrunk.append(b)
-
-    combined = "\n".join(shrunk)
-
-    if len(combined) > total_limit:
-        combined = combined[:total_limit] + "\n（※データ量の都合で一部省略しています）\n"
-
-    return combined
-
-
-# ==================================================
 # Dify レスポンスから answer を安全に取り出す
 # ==================================================
 def extract_answer_from_dify_response(res_json: dict) -> str:
@@ -375,6 +340,41 @@ def extract_answer_from_dify_response(res_json: dict) -> str:
     return ans or ""
 
 
+def call_dify_workflow(full_text: str) -> str:
+    """
+    与えられた full_text を Dify の Workflow に投げて answer を返すヘルパー。
+    """
+    if not DIFY_API_KEY:
+        raise RuntimeError("DIFY_API_KEY が設定されていません。")
+
+    payload = {
+        "inputs": {"text": full_text},
+        "response_mode": "blocking",
+        "user": "keiba-bot-user",
+    }
+
+    headers = {
+        "Authorization": f"Bearer {DIFY_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    res = requests.post(
+        "https://api.dify.ai/v1/workflows/run",
+        headers=headers,
+        json=payload,
+        timeout=600,
+    )
+
+    if res.status_code != 200:
+        raise RuntimeError(f"Dify API status={res.status_code}")
+
+    ans = extract_answer_from_dify_response(res.json())
+    if not ans:
+        raise RuntimeError("Dify から answer テキストを取得できませんでした。")
+
+    return ans
+
+
 # ==================================================
 # メイン処理
 # ==================================================
@@ -382,6 +382,9 @@ def run_all_races(target_races=None):
     """
     target_races: [10, 11, 12] のような int リスト。
     None の場合は 1〜12R すべて実行。
+
+    ★15頭以上のレースは、出走馬リストを2分割して
+      Dify に 2 回投げる仕様に変更（文字数カットなし）
     """
 
     race_numbers = (
@@ -464,7 +467,7 @@ def run_all_races(target_races=None):
                 cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
 
                 # -------------------------
-                # 4) 馬ごとにマージ
+                # 4) 馬ごとにマージ（ここでは一切カットしない）
                 # -------------------------
                 merged = []
                 for h in zenkoso:
@@ -478,11 +481,10 @@ def run_all_races(target_races=None):
                     )
                     merged.append(text)
 
-                # -------------------------
-                # 4.5) テキスト圧縮（メインレース対策）
-                # -------------------------
-                is_main = (r == 11)  # 11R をメイン扱いにする
-                merged_text = shrink_horse_blocks(merged, is_main_race=is_main)
+                if not merged:
+                    # 前走談話テーブルが無いレースなど
+                    st.warning(f"{place_name} {r}R: 出走馬データが取得できませんでした。")
+                    continue
 
                 # -------------------------
                 # 5) レース情報部分のテキスト
@@ -499,44 +501,53 @@ def run_all_races(target_races=None):
 
                 race_header = "\n".join(race_header_lines)
 
-                full_text = (
-                    "■レース情報\n"
-                    f"{race_header}\n\n"
-                    f"以下は{place_name}{r}Rの全頭データである。\n"
-                    "各馬について【厩舎の話】【前走情報・前走談話】【調教】を基に分析せよ。\n\n"
-                    "■出走馬詳細データ\n"
-                    + merged_text
-                )
+                # =================================================
+                # 6) 15頭以上は 2 分割して Dify に投げる
+                # =================================================
+                all_answers = []
+                num_horses = len(merged)
 
-                # -------------------------
-                # 6) Dify Workflow へ投げる
-                # -------------------------
-                payload = {
-                    "inputs": {"text": full_text},
-                    "response_mode": "blocking",
-                    "user": "keiba-bot-user",
-                }
+                if num_horses >= 15:
+                    # 前半・後半にざっくり 2 分割
+                    mid = num_horses // 2
+                    parts = [merged[:mid], merged[mid:]]
 
-                headers = {
-                    "Authorization": f"Bearer {DIFY_API_KEY}",
-                    "Content-Type": "application/json",
-                }
+                    for idx, part_blocks in enumerate(parts, start=1):
+                        merged_text = "\n".join(part_blocks)
 
-                res = requests.post(
-                    "https://api.dify.ai/v1/workflows/run",
-                    headers=headers,
-                    json=payload,
-                    timeout=600,
-                )
+                        full_text = (
+                            "■レース情報\n"
+                            f"{race_header}\n\n"
+                            f"以下は{place_name}{r}Rの全頭データのうち、"
+                            f"パート{idx}/{len(parts)}に含まれる馬のデータである。\n"
+                            "各馬について【厩舎の話】【前走情報・前走談話】【調教】を基に分析せよ。\n"
+                            "パートごとの分析を行いつつ、最終的には全パートを踏まえた"
+                            "総合的な評価・狙い目も提示すること。\n\n"
+                            "■出走馬詳細データ（このパートに含まれる馬）\n"
+                            + merged_text
+                        )
 
-                if res.status_code != 200:
-                    raise RuntimeError(
-                        f"Dify API status={res.status_code}"
+                        ans_part = call_dify_workflow(full_text)
+                        # パートごとに見出しをつけてつなぐ
+                        all_answers.append(
+                            f"【{place_name}{r}R 分析パート{idx}/{len(parts)}】\n{ans_part}"
+                        )
+
+                    ans = "\n\n---\n\n".join(all_answers)
+
+                else:
+                    # 14頭以下なら 1 回でそのまま投げる
+                    merged_text = "\n".join(merged)
+                    full_text = (
+                        "■レース情報\n"
+                        f"{race_header}\n\n"
+                        f"以下は{place_name}{r}Rの全頭データである。\n"
+                        "各馬について【厩舎の話】【前走情報・前走談話】【調教】を基に分析せよ。\n\n"
+                        "■出走馬詳細データ\n"
+                        + merged_text
                     )
 
-                ans = extract_answer_from_dify_response(res.json())
-                if not ans:
-                    raise RuntimeError("Dify から answer テキストを取得できませんでした。")
+                    ans = call_dify_workflow(full_text)
 
                 # -------------------------
                 # 7) 画面表示
@@ -546,7 +557,7 @@ def run_all_races(target_races=None):
                 st.write("---")
 
                 # -------------------------
-                # 8) Supabase に履歴保存
+                # 8) Supabase に履歴保存（分割していてもまとめて1件）
                 # -------------------------
                 save_history(
                     YEAR,
