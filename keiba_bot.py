@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
 # ==================================================
-# 【設定エリア】
+# 【設定エリア】secretsから読み込み
 # ==================================================
 
 KEIBA_ID = st.secrets.get("KEIBA_ID", "")
@@ -21,6 +21,7 @@ DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY", "")
 
+# デフォルト設定（サイドバー等で set_race_params が呼ばれると書き換わる）
 YEAR = "2025"
 KAI = "04"
 PLACE = "02"
@@ -28,7 +29,7 @@ DAY = "02"
 
 
 def set_race_params(year, kai, place, day):
-    """main.py から開催情報を差し替える用"""
+    """main.py から開催情報を差し替えるための関数"""
     global YEAR, KAI, PLACE, DAY
     YEAR = str(year)
     KAI = str(kai).zfill(2)
@@ -37,7 +38,7 @@ def set_race_params(year, kai, place, day):
 
 
 # ==================================================
-# Supabase
+# Supabase クライアント
 # ==================================================
 @st.cache_resource
 def get_supabase_client() -> Client | None:
@@ -79,7 +80,7 @@ def save_history(
 
 
 # ==================================================
-# HTML パース関数群（変更なし）
+# HTML パース関数群 (変更なし)
 # ==================================================
 def parse_race_info(html: str):
     soup = BeautifulSoup(html, "html.parser")
@@ -129,7 +130,6 @@ def parse_zenkoso_interview(html: str):
     rows = table.tbody.find_all("tr")
     result = []
     i = 0
-
     while i < len(rows):
         row = rows[i]
         if "spacer" in (row.get("class") or []):
@@ -258,19 +258,20 @@ def fetch_cyokyo_dict(driver, race_id: str):
 
 
 # ==================================================
-# ★Dify ストリーミング呼び出し関数 (Generator)
+# ★Dify ワークフロー用ストリーミング関数 (強化版)
 # ==================================================
 def stream_dify_workflow(full_text: str):
     """
     Dify Workflow をストリーミングモードで呼び出し、
-    受信したテキストチャンクを逐次 yield するジェネレーター。
+    ブロッキング回避(脈打ち)をしつつ、最終的な答えを確実に抽出してyieldする。
     """
     if not DIFY_API_KEY:
-        raise RuntimeError("DIFY_API_KEY が設定されていません。")
+        yield "⚠️ エラー: DIFY_API_KEY が設定されていません。"
+        return
 
     payload = {
         "inputs": {"text": full_text},
-        "response_mode": "streaming",  # ★ここを streaming に変更
+        "response_mode": "streaming",  # ストリーミング必須
         "user": "keiba-bot-user",
     }
 
@@ -279,59 +280,75 @@ def stream_dify_workflow(full_text: str):
         "Content-Type": "application/json",
     }
 
-    # stream=True でリクエスト
-    res = requests.post(
-        "https://api.dify.ai/v1/workflows/run",
-        headers=headers,
-        json=payload,
-        stream=True,
-        timeout=300,  # 接続自体のタイムアウト（長めに設定）
-    )
+    try:
+        # タイムアウトを長めに設定(5分)
+        res = requests.post(
+            "https://api.dify.ai/v1/workflows/run",
+            headers=headers,
+            json=payload,
+            stream=True,
+            timeout=300, 
+        )
 
-    if res.status_code != 200:
-        raise RuntimeError(f"Dify API status={res.status_code}")
+        if res.status_code != 200:
+            yield f"⚠️ エラー: Dify API Error {res.status_code}\n{res.text}"
+            return
 
-    # ストリーミングデータを1行ずつ処理
-    for line in res.iter_lines():
-        if line:
-            decoded_line = line.decode('utf-8')
-            if decoded_line.startswith("data:"):
-                json_str = decoded_line.replace("data: ", "")
-                try:
-                    data = json.loads(json_str)
-                    # ワークフロー完了イベントなどは無視し、answer/text がある場合のみ返す
-                    # ワークフローの出力キーが "answer" であると仮定
-                    # ストリーミングイベントの構造に応じて調整が必要な場合があります
-                    event = data.get("event")
+        # 1行ずつ受信
+        for line in res.iter_lines():
+            if line:
+                decoded_line = line.decode('utf-8')
+                if decoded_line.startswith("data:"):
+                    json_str = decoded_line.replace("data: ", "")
                     
-                    # workflow_started, workflow_finished, ping などはスキップ
-                    if event in ["workflow_started", "workflow_finished", "ping"]:
-                        continue
+                    try:
+                        data = json.loads(json_str)
+                        event = data.get("event")
+                        
+                        # ★通信維持のための脈打ち（重要）
+                        # 途中経過イベントの時は空文字を返してループを止めない
+                        if event in ["workflow_started", "node_started", "node_finished"]:
+                            yield ""
+                            continue
 
-                    # text チャンクを取得 (AgentモードやWorkflowモードでキーが異なる場合あり)
-                    # 通常Workflowからのストリーミングは data['answer'] に入ってくることが多い
-                    chunk = data.get("answer", "") 
-                    
-                    # 念のため output キーなども確認（ノード出力の場合）
-                    if not chunk and "data" in data and isinstance(data["data"], dict):
-                         chunk = data["data"].get("answer", "")
+                        # パターン1: Chatアプリライクなストリーミング
+                        chunk = data.get("answer", "")
+                        if chunk:
+                            yield chunk
 
-                    if chunk:
-                        yield chunk
+                        # パターン2: Workflow完了時の一括出力
+                        if event == "workflow_finished":
+                            outputs = data.get("data", {}).get("outputs", {})
+                            if outputs:
+                                # 変数名が何であっても、値があるものを結合して返す
+                                found_text = ""
+                                for key, value in outputs.items():
+                                    if isinstance(value, str):
+                                        found_text += value + "\n"
+                                
+                                if found_text:
+                                    yield found_text
+                                else:
+                                    yield f"⚠️ テキストが見つかりませんでした。Raw: {outputs}"
 
-                except json.JSONDecodeError:
-                    pass
+                    except json.JSONDecodeError:
+                        pass
+                    except Exception as e:
+                        yield f"⚠️ Parse Error: {str(e)}"
+
+    except Exception as e:
+        yield f"⚠️ Request Error: {str(e)}"
 
 
 # ==================================================
-# メイン処理
+# メイン処理: 全レース実行
 # ==================================================
 def run_all_races(target_races=None):
     """
-    ストリーミング対応版
-    15頭以上でも分割せず、一括送信＆リアルタイム表示を行う。
+    全頭データをスクレイピング -> Difyへ送信 -> ストリーミング表示 -> Supabase保存
     """
-
+    
+    # レース番号のリスト作成
     race_numbers = (
         list(range(1, 13))
         if target_races is None
@@ -345,6 +362,7 @@ def run_all_races(target_races=None):
     }
     place_name = place_names.get(PLACE, "不明")
 
+    # Selenium 設定
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
@@ -352,26 +370,46 @@ def run_all_races(target_races=None):
     driver = webdriver.Chrome(options=options)
 
     try:
-        # ログイン
+        # --- 1. ログイン処理 ---
+        st.info("🔑 競馬ブックへログイン中...")
         driver.get("https://s.keibabook.co.jp/login/login")
+        
         WebDriverWait(driver, 10).until(
             EC.visibility_of_element_located((By.NAME, "login_id"))
         ).send_keys(KEIBA_ID)
+        
         WebDriverWait(driver, 10).until(
             EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']"))
         ).send_keys(KEIBA_PASS)
+        
         WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='submit'], .btn-login"))
         ).click()
-        time.sleep(2)
+        
+        time.sleep(2) # 遷移待ち
 
-        # 各R処理
+        st.success("ログイン成功。レース分析を開始します。")
+
+        # --- 2. 各レース処理 ---
         for r in race_numbers:
             race_num = f"{r:02}"
             race_id = base_id + race_num
 
+            # UI: レースごとのヘッダー
+            st.markdown(f"### {place_name} {r}R")
+            
+            # ステータス表示用のコンテナ（ここに状況を逐次出す）
+            status_area = st.empty()
+            result_area = st.empty()
+            full_answer = ""
+
             try:
-                # --- データ取得 (スクレイピング) ---
+                # ==========================
+                # Phase A: データ収集中
+                # ==========================
+                status_area.info(f"📡 {place_name}{r}R のデータを収集中... (数秒かかります)")
+                
+                # A-1. 厩舎コメント・基本情報
                 url_danwa = f"https://s.keibabook.co.jp/cyuou/danwa/0/{race_id}"
                 driver.get(url_danwa)
                 time.sleep(1)
@@ -379,14 +417,16 @@ def run_all_races(target_races=None):
                 race_info = parse_race_info(html_danwa)
                 danwa_dict = parse_danwa_comments(html_danwa)
 
+                # A-2. 前走インタビュー
                 url_inter = f"https://s.keibabook.co.jp/cyuou/syoin/{race_id}"
                 driver.get(url_inter)
                 time.sleep(1)
                 zenkoso = parse_zenkoso_interview(driver.page_source)
 
+                # A-3. 調教
                 cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
 
-                # --- テキスト結合 ---
+                # A-4. データ結合
                 merged = []
                 for h in zenkoso:
                     uma = h["umaban"]
@@ -400,9 +440,10 @@ def run_all_races(target_races=None):
                     merged.append(text)
 
                 if not merged:
-                    st.warning(f"{place_name} {r}R: データなし")
+                    status_area.warning(f"⚠️ {place_name} {r}R: データが取得できませんでした。スキップします。")
                     continue
 
+                # プロンプト作成
                 race_header_lines = []
                 if race_info["date_meet"]: race_header_lines.append(race_info["date_meet"])
                 if race_info["race_name"]: race_header_lines.append(race_info["race_name"])
@@ -410,7 +451,6 @@ def run_all_races(target_races=None):
                 if race_info["course_line"]: race_header_lines.append(race_info["course_line"])
                 race_header = "\n".join(race_header_lines)
 
-                # ★分割ロジック廃止：全頭まとめて送信
                 merged_text = "\n".join(merged)
                 full_text = (
                     "■レース情報\n"
@@ -421,42 +461,40 @@ def run_all_races(target_races=None):
                     + merged_text
                 )
 
-                # --- 画面表示準備 ---
-                st.markdown(f"### {place_name} {r}R")
+                # ==========================
+                # Phase B: AI思考中
+                # ==========================
+                status_area.info("🤖 AIが分析・執筆中です... (数十秒〜1分ほどお待ちください)")
                 
-                # 結果表示用のプレースホルダーを作成
-                result_placeholder = st.empty()
-                full_answer = ""
-
-                # --- Dify ストリーミング実行 ---
-                # ジェネレーターから少しずつテキストを受け取り、画面を逐次更新する
-                try:
-                    for chunk in stream_dify_workflow(full_text):
+                # Difyストリーミング呼び出し
+                for chunk in stream_dify_workflow(full_text):
+                    if chunk:
                         full_answer += chunk
-                        result_placeholder.markdown(full_answer + "▌") # カーソル風の演出
-                    
-                    # 完了後の最終表示（カーソル削除）
-                    result_placeholder.markdown(full_answer)
-                    
-                except Exception as e:
-                    st.error(f"Dify通信中にエラーが発生しました: {e}")
-                    # エラー起きても途中まで取れていれば保存するか、あるいは保存しないか
-                    # ここでは保存しないフローにします
-                    continue
-
-                st.write("---")
-
-                # --- Supabase に履歴保存（全受信後に一括保存） ---
+                        # 思考中でもここが更新される（カーソル表示）
+                        result_area.markdown(full_answer + "▌")
+                
+                # ==========================
+                # Phase C: 完了
+                # ==========================
+                result_area.markdown(full_answer) # 最終結果表示（カーソル消す）
+                
                 if full_answer:
+                    status_area.success("✅ 分析完了")
+                    # Supabase 保存
                     save_history(
                         YEAR, KAI, PLACE, place_name, DAY,
                         race_num, race_id, full_answer
                     )
+                else:
+                    status_area.error("⚠️ AIからの回答が空でした。")
 
             except Exception as e:
-                err_msg = f"{place_name} {r}R: エラー"
-                print(err_msg, e)
-                st.error(err_msg)
+                err_msg = f"❌ エラー発生 ({place_name} {r}R): {str(e)}"
+                print(err_msg)
+                status_area.error(err_msg)
+            
+            # レース間の区切り線
+            st.write("---")
 
     finally:
         driver.quit()
