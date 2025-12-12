@@ -78,13 +78,11 @@ def save_history(
     }
 
     try:
-        # シンプルに insert だけする
         supabase.table("history").insert(data).execute()
     except Exception as e:
         # 画面には出さず、ログだけ残す
         print("Supabase insert error:", e)
         pass
-
 
 
 # ==================================================
@@ -344,13 +342,17 @@ def fetch_cyokyo_dict(driver: webdriver.Chrome, race_id: str) -> Dict[str, str]:
 
     return parse_cyokyo(driver.page_source)
 
+
+# ==================================================
+# テキスト圧縮
+# ==================================================
 def shrink_horse_blocks(
-    blocks,
-    per_horse_limit=450,   # 1頭あたり最大文字数（18頭でも安全）
-    total_limit=13000      # 全体の最大文字数（Dify が安定して処理可能）
-):
+    blocks: List[str],
+    per_horse_limit: int = 450,   # 1頭あたり最大文字数（18頭でも安全）
+    total_limit: int = 13000      # 全体の最大文字数（Dify が安定して処理可能）
+) -> str:
     """
-    blocks: 馬ごとのテキストリスト（merged）
+    blocks: 馬ごとのテキストリスト
     各馬の文章を短くしつつ、全体の文字数も安全範囲に収める
     """
     shrunk = []
@@ -369,6 +371,7 @@ def shrink_horse_blocks(
         combined = combined[:total_limit] + "\n（※データ量の都合で一部省略しています）\n"
 
     return combined
+
 
 # ==================================================
 # メイン処理
@@ -446,56 +449,84 @@ def run_all_races(target_races=None):
                 url_inter = f"https://s.keibabook.co.jp/cyuou/syoin/{race_id}"
                 driver.get(url_inter)
                 time.sleep(1)
-                zenkoso = parse_zenkoso_interview(driver.page_source)
+                zenkoso_list = parse_zenkoso_interview(driver.page_source)
 
                 # 3) 調教
                 cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
 
-     # 4) 馬ごとにマージ（1頭ずつテキスト化）
-merged = []
-for h in zenkoso:
-    uma = h["umaban"]
-    text = (
-        f"▼[枠{h['waku']} 馬番{uma}] {h['name']}\n"
-        f"  【厩舎の話】 {danwa_dict.get(uma, '（厩舎コメントなし）')}\n"
-        f"  【前走情報】 {h['prev_date_course']} ({h['prev_class']}) {h['prev_finish']}\n"
-        f"  【前走談話】 {h['prev_comment'] or '（前走談話なし）'}\n"
-        f"  【調教】 {cyokyo_dict.get(uma, '（調教情報なし）')}\n"
-    )
-    merged.append(text)
+                # 4) 馬ごとにマージ（1頭ずつテキスト化）
+                #    ・前走インタビューが無い馬も落とさないように
+                #    ・馬番のユニオンをとってソート
+                zenkoso_by_umaban: Dict[str, Dict[str, str]] = {
+                    h["umaban"]: h for h in zenkoso_list
+                }
 
-# 4.5) テキスト圧縮（メインレース対策 / 18頭前提）
-merged_text = shrink_horse_blocks(
-    merged,
-    per_horse_limit=450,   # ← 18頭でも約8100文字
-    total_limit=13000      # ← 全体で安全範囲
-)
+                horse_nums = sorted(
+                    set(danwa_dict.keys())
+                    | set(zenkoso_by_umaban.keys())
+                    | set(cyokyo_dict.keys()),
+                    key=lambda x: int(x) if x.isdigit() else 999
+                )
 
-# 5) レース情報を整形
-race_header_lines = []
-if race_info["date_meet"]:
-    race_header_lines.append(race_info["date_meet"])
-if race_info["race_name"]:
-    race_header_lines.append(race_info["race_name"])
-if race_info["cond1"]:
-    race_header_lines.append(race_info["cond1"])
-if race_info["course_line"]:
-    race_header_lines.append(race_info["course_line"])
+                merged_blocks: List[str] = []
 
-race_header = "\n".join(race_header_lines)
+                for uma in horse_nums:
+                    h = zenkoso_by_umaban.get(uma, {})
+                    waku = h.get("waku", "？")
+                    name = h.get("name", "馬名不明")
 
-# 6) 最終テキストとして結合（ここは長くならない）
-full_text = (
-    "■レース情報\n"
-    f"{race_header}\n\n"
-    f"以下は{place_name}{r}Rの全頭データである。\n"
-    "各馬について【厩舎の話】【前走情報・前走談話】【調教】を基に分析せよ。\n\n"
-    "■出走馬詳細データ\n"
-    + merged_text
-)
+                    prev_date_course = h.get("prev_date_course", "")
+                    prev_class = h.get("prev_class", "")
+                    prev_finish = h.get("prev_finish", "")
+                    prev_comment = h.get("prev_comment", "")
 
+                    if not prev_date_course and not prev_class and not prev_finish:
+                        prev_info = "（前走情報なし）"
+                    else:
+                        prev_info = f"{prev_date_course} ({prev_class}) {prev_finish}"
 
-                # 6) Dify Workflow 呼び出し
+                    prev_comment_text = prev_comment or "（前走談話なし）"
+
+                    text = (
+                        f"▼[枠{waku} 馬番{uma}] {name}\n"
+                        f"  【厩舎の話】 {danwa_dict.get(uma, '（厩舎コメントなし）')}\n"
+                        f"  【前走情報】 {prev_info}\n"
+                        f"  【前走談話】 {prev_comment_text}\n"
+                        f"  【調教】 {cyokyo_dict.get(uma, '（調教情報なし）')}\n"
+                    )
+                    merged_blocks.append(text)
+
+                # 4.5) テキスト圧縮（メインレース対策 / 18頭前提）
+                merged_text = shrink_horse_blocks(
+                    merged_blocks,
+                    per_horse_limit=450,   # 18頭でも約8100文字
+                    total_limit=13000      # 全体で安全範囲
+                )
+
+                # 5) レース情報を整形
+                race_header_lines = []
+                if race_info["date_meet"]:
+                    race_header_lines.append(race_info["date_meet"])
+                if race_info["race_name"]:
+                    race_header_lines.append(race_info["race_name"])
+                if race_info["cond1"]:
+                    race_header_lines.append(race_info["cond1"])
+                if race_info["course_line"]:
+                    race_header_lines.append(race_info["course_line"])
+
+                race_header = "\n".join(race_header_lines)
+
+                # 6) 最終テキストとして結合
+                full_text = (
+                    "■レース情報\n"
+                    f"{race_header}\n\n"
+                    f"以下は{place_name}{r}Rの全頭データである。\n"
+                    "各馬について【厩舎の話】【前走情報・前走談話】【調教】を基に分析せよ。\n\n"
+                    "■出走馬詳細データ\n"
+                    + merged_text
+                )
+
+                # 7) Dify Workflow 呼び出し
                 result = call_dify(full_text)
                 if result is None:
                     st.error(f"{place_name} {r}R: Dify API エラー")
@@ -517,12 +548,12 @@ full_text = (
                     st.error(f"{place_name} {r}R: 予想結果を取得できませんでした。")
                     continue
 
-                # 7) 画面表示
+                # 8) 画面表示
                 st.markdown(f"### {place_name} {r}R")
                 st.write(ans)
                 st.write("---")
 
-                # 8) Supabase に履歴保存（失敗してもスルー）
+                # 9) Supabase に履歴保存（失敗してもスルー）
                 save_history(
                     YEAR,
                     KAI,
@@ -534,11 +565,10 @@ full_text = (
                     ans,
                 )
 
-            except Exception:
+            except Exception as e:
                 # 詳細は出さず、このレースだけスキップ
+                print(f"{place_name} {r}R error:", e)
                 st.error(f"{place_name} {r}R の処理中にエラーが発生しました。")
 
     finally:
         driver.quit()
-
-
