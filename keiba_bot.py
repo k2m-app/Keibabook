@@ -78,14 +78,13 @@ def save_history(
     }
 
     try:
-        # race_id を一意キーとして upsert（既にあれば上書き）
-        supabase.table("history").upsert(
-            data,
-            on_conflict="race_id",
-        ).execute()
-    except Exception:
-        # 保存失敗しても他への影響は出さない
+        # シンプルに insert だけする
+        supabase.table("history").insert(data).execute()
+    except Exception as e:
+        # 画面には出さず、ログだけ残す
+        print("Supabase insert error:", e)
         pass
+
 
 
 # ==================================================
@@ -506,3 +505,4 @@ def run_all_races(target_races=None):
 
     finally:
         driver.quit()
+
