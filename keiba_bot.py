@@ -8,10 +8,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
-from typing import Dict, List, Optional
 
 # ==================================================
-# 設定エリア
+# 【設定エリア】
 # ==================================================
 
 KEIBA_ID = st.secrets.get("KEIBA_ID", "")
@@ -25,8 +24,6 @@ YEAR = "2025"
 KAI = "04"
 PLACE = "02"
 DAY = "02"
-
-BASE_URL = "https://s.keibabook.co.jp"
 
 
 def set_race_params(year, kai, place, day):
@@ -42,7 +39,7 @@ def set_race_params(year, kai, place, day):
 # Supabase
 # ==================================================
 @st.cache_resource
-def get_supabase_client() -> Optional[Client]:
+def get_supabase_client() -> Client | None:
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
     return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -58,13 +55,10 @@ def save_history(
     race_id: str,
     ai_answer: str,
 ) -> None:
-    """
-    history テーブルに 1 レース分の予想を保存する。
-    失敗してもアプリ全体は止めない。
-    """
+    """history テーブルに 1 レース分の予想を保存する。失敗してもアプリは止めない。"""
     supabase = get_supabase_client()
     if supabase is None:
-        return  # Supabase 未設定なら何もしない
+        return
 
     data = {
         "year": str(year),
@@ -80,73 +74,27 @@ def save_history(
     try:
         supabase.table("history").insert(data).execute()
     except Exception as e:
-        # 画面には出さず、ログだけ残す
+        # UI には出さずログだけ
         print("Supabase insert error:", e)
-        pass
-
-
-# ==================================================
-# Dify 呼び出し（ステータスに関わらず、中身を優先）
-# ==================================================
-def call_dify(full_text: str) -> Optional[Dict]:
-    """
-    Dify Workflow を叩いて JSON を返す。
-    HTTPステータスはログに出すだけで、
-    とにかく JSON が取れたらそれを返す。
-    """
-    payload = {
-        "inputs": {"text": full_text},
-        "response_mode": "blocking",
-        "user": "keiba-bot-user",
-    }
-    headers = {
-        "Authorization": f"Bearer {DIFY_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    last_error: Optional[Exception] = None
-
-    for attempt in range(2):  # 最大2回トライ
-        try:
-            res = requests.post(
-                "https://api.dify.ai/v1/workflows/run",
-                headers=headers,
-                json=payload,
-                timeout=600,
-            )
-            print("Dify status:", res.status_code)  # ログ用（画面には出ない）
-
-            try:
-                result = res.json()
-                return result
-            except Exception as e:
-                print("Dify JSON decode error:", e)
-                last_error = e
-                if attempt == 0:
-                    time.sleep(3)
-                    continue
-        except Exception as e:
-            print("Dify request error:", e)
-            last_error = e
-            if attempt == 0:
-                time.sleep(3)
-                continue
-
-    print("Dify call failed finally:", last_error)
-    return None
 
 
 # ==================================================
 # HTML パース（レース情報）
 # ==================================================
-def parse_race_info(html: str) -> Dict[str, str]:
+def parse_race_info(html: str):
     soup = BeautifulSoup(html, "html.parser")
     racetitle = soup.find("div", class_="racetitle")
     if not racetitle:
-        return {"date_meet": "", "race_name": "", "cond1": "", "course_line": ""}
+        return {
+            "date_meet": "",
+            "race_name": "",
+            "cond1": "",
+            "course_line": "",
+        }
 
     racemei = racetitle.find("div", class_="racemei")
-    date_meet, race_name = "", ""
+    date_meet = ""
+    race_name = ""
     if racemei:
         ps = racemei.find_all("p")
         if len(ps) >= 1:
@@ -155,7 +103,8 @@ def parse_race_info(html: str) -> Dict[str, str]:
             race_name = ps[1].get_text(strip=True)
 
     racetitle_sub = racetitle.find("div", class_="racetitle_sub")
-    cond1, course_line = "", ""
+    cond1 = ""
+    course_line = ""
     if racetitle_sub:
         sub_ps = racetitle_sub.find_all("p")
         if len(sub_ps) >= 1:
@@ -174,19 +123,19 @@ def parse_race_info(html: str) -> Dict[str, str]:
 # ==================================================
 # HTML パース（前走インタビュー）
 # ==================================================
-def parse_zenkoso_interview(html: str) -> List[Dict[str, str]]:
+def parse_zenkoso_interview(html: str):
     soup = BeautifulSoup(html, "html.parser")
     h2 = soup.find("h2", string=lambda s: s and "前走のインタビュー" in s)
     if not h2:
         return []
 
     midasi = h2.find_parent("div", class_="midasi")
-    table = midasi.find_next("table", class_="syoin") if midasi else None
+    table = midasi.find_next("table", class_="syoin")
     if not table or not table.tbody:
         return []
 
     rows = table.tbody.find_all("tr")
-    result: List[Dict[str, str]] = []
+    result = []
     i = 0
 
     while i < len(rows):
@@ -244,6 +193,7 @@ def parse_zenkoso_interview(html: str) -> List[Dict[str, str]]:
                 "prev_comment": prev_comment,
             }
         )
+
         i += 2
 
     return result
@@ -252,13 +202,13 @@ def parse_zenkoso_interview(html: str) -> List[Dict[str, str]]:
 # ==================================================
 # HTML パース（厩舎の話）
 # ==================================================
-def parse_danwa_comments(html: str) -> Dict[str, str]:
+def parse_danwa_comments(html: str):
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_="danwa")
     if not table or not table.tbody:
         return {}
 
-    danwa_dict: Dict[str, str] = {}
+    danwa_dict = {}
     current = None
 
     for row in table.tbody.find_all("tr"):
@@ -276,12 +226,15 @@ def parse_danwa_comments(html: str) -> Dict[str, str]:
 
 
 # ==================================================
-# HTML パース（調教）
+# 調教ページ パース
 # ==================================================
-def parse_cyokyo(html: str) -> Dict[str, str]:
-    """調教ページのHTMLから {馬番: 調教テキスト} の dict を返す"""
+def parse_cyokyo(html: str):
+    """
+    調教ページのHTMLから
+    { "馬番": "整形済みテキスト" } の dict を返す
+    """
     soup = BeautifulSoup(html, "html.parser")
-    cyokyo_dict: Dict[str, str] = {}
+    cyokyo_dict = {}
 
     section = None
     h2 = soup.find("h2", string=lambda s: s and "調教" in s)
@@ -289,6 +242,7 @@ def parse_cyokyo(html: str) -> Dict[str, str]:
         midasi_div = h2.find_parent("div", class_="midasi")
         if midasi_div:
             section = midasi_div.find_next_sibling("div", class_="section")
+
     if section is None:
         section = soup
 
@@ -317,7 +271,9 @@ def parse_cyokyo(html: str) -> Dict[str, str]:
         tanpyo = tanpyo_td.get_text(strip=True) if tanpyo_td else ""
 
         detail_row = rows[1] if len(rows) >= 2 else None
-        detail_text = detail_row.get_text(" ", strip=True) if detail_row else ""
+        detail_text = ""
+        if detail_row:
+            detail_text = detail_row.get_text(" ", strip=True)
 
         final_text = (
             f"【馬名】{bamei}（馬番{umaban}） "
@@ -329,7 +285,13 @@ def parse_cyokyo(html: str) -> Dict[str, str]:
     return cyokyo_dict
 
 
-def fetch_cyokyo_dict(driver: webdriver.Chrome, race_id: str) -> Dict[str, str]:
+# ==================================================
+# 調教取得関数
+# ==================================================
+BASE_URL = "https://s.keibabook.co.jp"
+
+
+def fetch_cyokyo_dict(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/cyokyo/0/{race_id}"
     driver.get(url)
 
@@ -340,37 +302,77 @@ def fetch_cyokyo_dict(driver: webdriver.Chrome, race_id: str) -> Dict[str, str]:
     except Exception:
         return {}
 
-    return parse_cyokyo(driver.page_source)
+    html = driver.page_source
+    return parse_cyokyo(html)
 
 
 # ==================================================
-# テキスト圧縮
+# テキスト圧縮（Dify 安定用）
 # ==================================================
-def shrink_horse_blocks(
-    blocks: List[str],
-    per_horse_limit: int = 450,   # 1頭あたり最大文字数（18頭でも安全）
-    total_limit: int = 13000      # 全体の最大文字数（Dify が安定して処理可能）
-) -> str:
+def shrink_horse_blocks(blocks, is_main_race=False):
     """
-    blocks: 馬ごとのテキストリスト
-    各馬の文章を短くしつつ、全体の文字数も安全範囲に収める
+    blocks: 馬ごとのテキストリスト（merged）
+    is_main_race: メインレース（11R など）のとき True
+
+    メインレースはかなりきつめにカットして Dify への入力を安定させる。
     """
+    # レースごとの上限設定
+    if is_main_race or len(blocks) >= 16:
+        # メイン想定：頭数もコメントも濃いので強めに圧縮
+        per_horse_limit = 250    # 1頭あたり最大 250 文字
+        total_limit = 7000       # 全体 7000 文字まで
+    else:
+        # それ以外のレースは少しゆるめ
+        per_horse_limit = 380    # 1頭あたり最大 380 文字
+        total_limit = 11000      # 全体 11000 文字まで
+
     shrunk = []
 
-    # まず各馬を適切な長さに切る
     for b in blocks:
         if len(b) > per_horse_limit:
             b = b[:per_horse_limit] + "\n（※この馬のコメントは長いため一部省略）\n"
         shrunk.append(b)
 
-    # 一旦結合
     combined = "\n".join(shrunk)
 
-    # 全体が大きすぎる場合さらにカット
     if len(combined) > total_limit:
         combined = combined[:total_limit] + "\n（※データ量の都合で一部省略しています）\n"
 
     return combined
+
+
+# ==================================================
+# Dify レスポンスから answer を安全に取り出す
+# ==================================================
+def extract_answer_from_dify_response(res_json: dict) -> str:
+    """
+    Dify /workflows/run のレスポンスから answer テキストをできるだけ確実に取り出す。
+    想定されるパターン:
+      data: { outputs: { answer: "..." } }
+      data: { outputs: [ {output: "answer", type: "text", value: "..."} ] }
+    """
+    data = res_json.get("data", {})
+    ans = ""
+
+    outputs = data.get("outputs")
+
+    if isinstance(outputs, dict):
+        ans = outputs.get("answer", "") or outputs.get("text", "")
+    elif isinstance(outputs, list):
+        for o in outputs:
+            if (
+                o.get("output") == "answer"
+                and o.get("type") in ("text", "string")
+            ):
+                ans = o.get("value", "")
+                if ans:
+                    break
+
+    # 念のため、data 直下に answer があるパターンも拾う
+    if not ans and isinstance(data, dict):
+        ans = data.get("answer", "")
+
+    return ans or ""
 
 
 # ==================================================
@@ -381,6 +383,7 @@ def run_all_races(target_races=None):
     target_races: [10, 11, 12] のような int リスト。
     None の場合は 1〜12R すべて実行。
     """
+
     race_numbers = (
         list(range(1, 13))
         if target_races is None
@@ -430,13 +433,15 @@ def run_all_races(target_races=None):
 
         time.sleep(2)
 
-        # 各レース処理
+        # 各R処理
         for r in race_numbers:
             race_num = f"{r:02}"
             race_id = base_id + race_num
 
             try:
-                # 1) 厩舎コメント & レース情報
+                # -------------------------
+                # 1) 厩舎コメント＆レース情報
+                # -------------------------
                 url_danwa = f"https://s.keibabook.co.jp/cyuou/danwa/0/{race_id}"
                 driver.get(url_danwa)
                 time.sleep(1)
@@ -445,65 +450,43 @@ def run_all_races(target_races=None):
                 race_info = parse_race_info(html_danwa)
                 danwa_dict = parse_danwa_comments(html_danwa)
 
+                # -------------------------
                 # 2) 前走インタビュー
+                # -------------------------
                 url_inter = f"https://s.keibabook.co.jp/cyuou/syoin/{race_id}"
                 driver.get(url_inter)
                 time.sleep(1)
-                zenkoso_list = parse_zenkoso_interview(driver.page_source)
+                zenkoso = parse_zenkoso_interview(driver.page_source)
 
+                # -------------------------
                 # 3) 調教
+                # -------------------------
                 cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
 
-                # 4) 馬ごとにマージ（1頭ずつテキスト化）
-                #    ・前走インタビューが無い馬も落とさないように
-                #    ・馬番のユニオンをとってソート
-                zenkoso_by_umaban: Dict[str, Dict[str, str]] = {
-                    h["umaban"]: h for h in zenkoso_list
-                }
-
-                horse_nums = sorted(
-                    set(danwa_dict.keys())
-                    | set(zenkoso_by_umaban.keys())
-                    | set(cyokyo_dict.keys()),
-                    key=lambda x: int(x) if x.isdigit() else 999
-                )
-
-                merged_blocks: List[str] = []
-
-                for uma in horse_nums:
-                    h = zenkoso_by_umaban.get(uma, {})
-                    waku = h.get("waku", "？")
-                    name = h.get("name", "馬名不明")
-
-                    prev_date_course = h.get("prev_date_course", "")
-                    prev_class = h.get("prev_class", "")
-                    prev_finish = h.get("prev_finish", "")
-                    prev_comment = h.get("prev_comment", "")
-
-                    if not prev_date_course and not prev_class and not prev_finish:
-                        prev_info = "（前走情報なし）"
-                    else:
-                        prev_info = f"{prev_date_course} ({prev_class}) {prev_finish}"
-
-                    prev_comment_text = prev_comment or "（前走談話なし）"
-
+                # -------------------------
+                # 4) 馬ごとにマージ
+                # -------------------------
+                merged = []
+                for h in zenkoso:
+                    uma = h["umaban"]
                     text = (
-                        f"▼[枠{waku} 馬番{uma}] {name}\n"
+                        f"▼[枠{h['waku']} 馬番{uma}] {h['name']}\n"
                         f"  【厩舎の話】 {danwa_dict.get(uma, '（厩舎コメントなし）')}\n"
-                        f"  【前走情報】 {prev_info}\n"
-                        f"  【前走談話】 {prev_comment_text}\n"
+                        f"  【前走情報】 {h['prev_date_course']} ({h['prev_class']}) {h['prev_finish']}\n"
+                        f"  【前走談話】 {h['prev_comment'] or '（前走談話なし）'}\n"
                         f"  【調教】 {cyokyo_dict.get(uma, '（調教情報なし）')}\n"
                     )
-                    merged_blocks.append(text)
+                    merged.append(text)
 
-                # 4.5) テキスト圧縮（メインレース対策 / 18頭前提）
-                merged_text = shrink_horse_blocks(
-                    merged_blocks,
-                    per_horse_limit=450,   # 18頭でも約8100文字
-                    total_limit=13000      # 全体で安全範囲
-                )
+                # -------------------------
+                # 4.5) テキスト圧縮（メインレース対策）
+                # -------------------------
+                is_main = (r == 11)  # 11R をメイン扱いにする
+                merged_text = shrink_horse_blocks(merged, is_main_race=is_main)
 
-                # 5) レース情報を整形
+                # -------------------------
+                # 5) レース情報部分のテキスト
+                # -------------------------
                 race_header_lines = []
                 if race_info["date_meet"]:
                     race_header_lines.append(race_info["date_meet"])
@@ -516,7 +499,6 @@ def run_all_races(target_races=None):
 
                 race_header = "\n".join(race_header_lines)
 
-                # 6) 最終テキストとして結合
                 full_text = (
                     "■レース情報\n"
                     f"{race_header}\n\n"
@@ -526,34 +508,46 @@ def run_all_races(target_races=None):
                     + merged_text
                 )
 
-                # 7) Dify Workflow 呼び出し
-                result = call_dify(full_text)
-                if result is None:
-                    st.error(f"{place_name} {r}R: Dify API エラー")
-                    continue
+                # -------------------------
+                # 6) Dify Workflow へ投げる
+                # -------------------------
+                payload = {
+                    "inputs": {"text": full_text},
+                    "response_mode": "blocking",
+                    "user": "keiba-bot-user",
+                }
 
-                data = result.get("data", {})
-                outputs = data.get("outputs", {})
-                ans = ""
+                headers = {
+                    "Authorization": f"Bearer {DIFY_API_KEY}",
+                    "Content-Type": "application/json",
+                }
 
-                if isinstance(outputs, dict):
-                    ans = outputs.get("answer", "")
-                elif isinstance(outputs, list):
-                    for o in outputs:
-                        if o.get("output") == "answer" and o.get("type") == "text":
-                            ans = o.get("value", "")
-                            break
+                res = requests.post(
+                    "https://api.dify.ai/v1/workflows/run",
+                    headers=headers,
+                    json=payload,
+                    timeout=600,
+                )
 
+                if res.status_code != 200:
+                    raise RuntimeError(
+                        f"Dify API status={res.status_code}"
+                    )
+
+                ans = extract_answer_from_dify_response(res.json())
                 if not ans:
-                    st.error(f"{place_name} {r}R: 予想結果を取得できませんでした。")
-                    continue
+                    raise RuntimeError("Dify から answer テキストを取得できませんでした。")
 
-                # 8) 画面表示
+                # -------------------------
+                # 7) 画面表示
+                # -------------------------
                 st.markdown(f"### {place_name} {r}R")
                 st.write(ans)
                 st.write("---")
 
-                # 9) Supabase に履歴保存（失敗してもスルー）
+                # -------------------------
+                # 8) Supabase に履歴保存
+                # -------------------------
                 save_history(
                     YEAR,
                     KAI,
@@ -566,9 +560,10 @@ def run_all_races(target_races=None):
                 )
 
             except Exception as e:
-                # 詳細は出さず、このレースだけスキップ
-                print(f"{place_name} {r}R error:", e)
-                st.error(f"{place_name} {r}R の処理中にエラーが発生しました。")
+                # このレースだけエラー内容を簡易表示して、次のレースへ
+                err_msg = f"{place_name} {r}R: Dify API エラー"
+                print(err_msg, "detail:", e)
+                st.error(err_msg)
 
     finally:
         driver.quit()
