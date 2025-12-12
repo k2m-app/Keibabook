@@ -8,6 +8,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
+from typing import Dict, List, Optional
 
 # ==================================================
 # 設定エリア
@@ -41,7 +42,7 @@ def set_race_params(year, kai, place, day):
 # Supabase
 # ==================================================
 @st.cache_resource
-def get_supabase_client() -> Client | None:
+def get_supabase_client() -> Optional[Client]:
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
     return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -77,21 +78,74 @@ def save_history(
     }
 
     try:
-        # ★ insert ではなく upsert に変更
-        #   history.race_id が UNIQUE / PK でもエラーにならず上書きされる
+        # race_id を一意キーとして upsert（既にあれば上書き）
         supabase.table("history").upsert(
             data,
-            on_conflict=["race_id"],   # supabase-py v2 系
+            on_conflict="race_id",
         ).execute()
     except Exception:
-        # エラー内容は出さず、静かにスキップ
+        # 保存失敗しても他への影響は出さない
         pass
+
+
+# ==================================================
+# Dify 呼び出し
+# ==================================================
+def call_dify(full_text: str) -> Optional[Dict]:
+    """
+    Dify Workflow を叩いて JSON を返す。
+    非 2xx や例外時は最大 2 回リトライ。UI には詳細は出さない。
+    """
+    payload = {
+        "inputs": {"text": full_text},
+        "response_mode": "blocking",
+        "user": "keiba-bot-user",
+    }
+    headers = {
+        "Authorization": f"Bearer {DIFY_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    for attempt in range(2):  # 最大2回トライ
+        try:
+            res = requests.post(
+                "https://api.dify.ai/v1/workflows/run",
+                headers=headers,
+                json=payload,
+                timeout=600,
+            )
+        except Exception as e:
+            # ネットワーク等の例外
+            print("Dify request error:", e)
+            if attempt == 0:
+                time.sleep(3)
+                continue
+            return None
+
+        if 200 <= res.status_code < 300:
+            try:
+                return res.json()
+            except Exception as e:
+                print("Dify JSON decode error:", e)
+                if attempt == 0:
+                    time.sleep(3)
+                    continue
+                return None
+
+        # 非2xxの場合
+        print("Dify non-2xx:", res.status_code, res.text[:200])
+        if attempt == 0:
+            time.sleep(3)
+            continue
+        return None
+
+    return None
 
 
 # ==================================================
 # HTML パース（レース情報）
 # ==================================================
-def parse_race_info(html: str) -> dict:
+def parse_race_info(html: str) -> Dict[str, str]:
     soup = BeautifulSoup(html, "html.parser")
     racetitle = soup.find("div", class_="racetitle")
     if not racetitle:
@@ -126,7 +180,7 @@ def parse_race_info(html: str) -> dict:
 # ==================================================
 # HTML パース（前走インタビュー）
 # ==================================================
-def parse_zenkoso_interview(html: str) -> list[dict]:
+def parse_zenkoso_interview(html: str) -> List[Dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     h2 = soup.find("h2", string=lambda s: s and "前走のインタビュー" in s)
     if not h2:
@@ -138,7 +192,7 @@ def parse_zenkoso_interview(html: str) -> list[dict]:
         return []
 
     rows = table.tbody.find_all("tr")
-    result = []
+    result: List[Dict[str, str]] = []
     i = 0
 
     while i < len(rows):
@@ -204,13 +258,13 @@ def parse_zenkoso_interview(html: str) -> list[dict]:
 # ==================================================
 # HTML パース（厩舎の話）
 # ==================================================
-def parse_danwa_comments(html: str) -> dict:
+def parse_danwa_comments(html: str) -> Dict[str, str]:
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_="danwa")
     if not table or not table.tbody:
         return {}
 
-    danwa_dict: dict[str, str] = {}
+    danwa_dict: Dict[str, str] = {}
     current = None
 
     for row in table.tbody.find_all("tr"):
@@ -230,10 +284,10 @@ def parse_danwa_comments(html: str) -> dict:
 # ==================================================
 # HTML パース（調教）
 # ==================================================
-def parse_cyokyo(html: str) -> dict:
+def parse_cyokyo(html: str) -> Dict[str, str]:
     """調教ページのHTMLから {馬番: 調教テキスト} の dict を返す"""
     soup = BeautifulSoup(html, "html.parser")
-    cyokyo_dict: dict[str, str] = {}
+    cyokyo_dict: Dict[str, str] = {}
 
     section = None
     h2 = soup.find("h2", string=lambda s: s and "調教" in s)
@@ -281,7 +335,7 @@ def parse_cyokyo(html: str) -> dict:
     return cyokyo_dict
 
 
-def fetch_cyokyo_dict(driver: webdriver.Chrome, race_id: str) -> dict:
+def fetch_cyokyo_dict(driver: webdriver.Chrome, race_id: str) -> Dict[str, str]:
     url = f"{BASE_URL}/cyuou/cyokyo/0/{race_id}"
     driver.get(url)
 
@@ -377,7 +431,7 @@ def run_all_races(target_races=None):
                 cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
 
                 # 4) 馬ごとにマージ
-                merged: list[str] = []
+                merged: List[str] = []
                 for h in zenkoso:
                     uma = h["umaban"]
                     text = (
@@ -390,7 +444,7 @@ def run_all_races(target_races=None):
                     merged.append(text)
 
                 # 5) レース情報テキスト
-                race_header_lines = []
+                race_header_lines: List[str] = []
                 if race_info["date_meet"]:
                     race_header_lines.append(race_info["date_meet"])
                 if race_info["race_name"]:
@@ -411,28 +465,12 @@ def run_all_races(target_races=None):
                 )
 
                 # 6) Dify Workflow 呼び出し
-                payload = {
-                    "inputs": {"text": full_text},
-                    "response_mode": "blocking",
-                    "user": "keiba-bot-user",
-                }
-                headers = {
-                    "Authorization": f"Bearer {DIFY_API_KEY}",
-                    "Content-Type": "application/json",
-                }
-
-                res = requests.post(
-                    "https://api.dify.ai/v1/workflows/run",
-                    headers=headers,
-                    json=payload,
-                    timeout=600,
-                )
-
-                if res.status_code != 200:
+                result = call_dify(full_text)
+                if result is None:
                     st.error(f"{place_name} {r}R: Dify API エラー")
                     continue
 
-                data = res.json().get("data", {})
+                data = result.get("data", {})
                 outputs = data.get("outputs", {})
                 ans = ""
 
@@ -448,7 +486,7 @@ def run_all_races(target_races=None):
                     st.error(f"{place_name} {r}R: 予想結果を取得できませんでした。")
                     continue
 
-                # 7) 画面表示（ここまで来れば必ず出る）
+                # 7) 画面表示
                 st.markdown(f"### {place_name} {r}R")
                 st.write(ans)
                 st.write("---")
@@ -466,7 +504,7 @@ def run_all_races(target_races=None):
                 )
 
             except Exception:
-                # 原因詳細は出さず、そのレースはスキップ
+                # 詳細は出さず、このレースだけスキップ
                 st.error(f"{place_name} {r}R の処理中にエラーが発生しました。")
 
     finally:
