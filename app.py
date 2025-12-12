@@ -102,16 +102,21 @@ if mode == "予想する":
     if "race_checks" not in st.session_state:
         st.session_state.race_checks = {i: (i == 1) for i in range(1, 13)}
 
+    # on_click 用のコールバック
+    def select_all_races():
+        for i in range(1, 13):
+            st.session_state.race_checks[i] = True
+
+    def clear_all_races():
+        for i in range(1, 13):
+            st.session_state.race_checks[i] = False
+
     # --- 全選択 / 全解除ボタン ---
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        if st.button("全レース選択"):
-            for i in range(1, 13):
-                st.session_state.race_checks[i] = True
+        st.button("全レース選択", on_click=select_all_races)
     with col2:
-        if st.button("全解除"):
-            for i in range(1, 13):
-                st.session_state.race_checks[i] = False
+        st.button("全解除", on_click=clear_all_races)
 
     # --- チェックボックス表示 ---
     selected_races = []
