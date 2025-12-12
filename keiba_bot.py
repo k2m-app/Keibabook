@@ -57,10 +57,13 @@ def save_history(
     race_id: str,
     ai_answer: str,
 ) -> None:
-    """history テーブルに 1 レース分の予想を保存する。"""
+    """
+    history テーブルに 1 レース分の予想を保存する。
+    失敗してもアプリ全体は止めない。
+    """
     supabase = get_supabase_client()
     if supabase is None:
-        return  # Supabase 未設定なら何もしないで終了
+        return  # Supabase 未設定なら何もしない
 
     data = {
         "year": str(year),
@@ -74,9 +77,14 @@ def save_history(
     }
 
     try:
-        supabase.table("history").insert(data).execute()
+        # ★ insert ではなく upsert に変更
+        #   history.race_id が UNIQUE / PK でもエラーにならず上書きされる
+        supabase.table("history").upsert(
+            data,
+            on_conflict=["race_id"],   # supabase-py v2 系
+        ).execute()
     except Exception:
-        # ここで落ちてもアプリ全体は止めない
+        # エラー内容は出さず、静かにスキップ
         pass
 
 
@@ -421,7 +429,7 @@ def run_all_races(target_races=None):
                 )
 
                 if res.status_code != 200:
-                    st.error(f"{place_name} {r}R: Dify API エラー（{res.status_code}）")
+                    st.error(f"{place_name} {r}R: Dify API エラー")
                     continue
 
                 data = res.json().get("data", {})
@@ -440,12 +448,12 @@ def run_all_races(target_races=None):
                     st.error(f"{place_name} {r}R: 予想結果を取得できませんでした。")
                     continue
 
-                # 7) 画面表示
+                # 7) 画面表示（ここまで来れば必ず出る）
                 st.markdown(f"### {place_name} {r}R")
                 st.write(ans)
                 st.write("---")
 
-                # 8) Supabase に履歴保存（失敗してもアプリは止めない）
+                # 8) Supabase に履歴保存（失敗してもスルー）
                 save_history(
                     YEAR,
                     KAI,
@@ -458,7 +466,7 @@ def run_all_races(target_races=None):
                 )
 
             except Exception:
-                # そのレースの処理は諦めて、次のレースへ
+                # 原因詳細は出さず、そのレースはスキップ
                 st.error(f"{place_name} {r}R の処理中にエラーが発生しました。")
 
     finally:
