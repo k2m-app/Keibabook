@@ -8,32 +8,24 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
-from bs4 import Tag
 
 # ==================================================
 # 【設定エリア】
 # ==================================================
 
-# 1. ログイン情報（Secretsから取得）
 KEIBA_ID = st.secrets.get("KEIBA_ID", "")
 KEIBA_PASS = st.secrets.get("KEIBA_PASS", "")
-
-# 2. Dify APIキー（Secretsから取得）
 DIFY_API_KEY = st.secrets.get("DIFY_API_KEY", "")
 
-# 3. Supabase の URL と anon key（Secrets から取得）
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = st.secrets.get("SUPABASE_ANON_KEY", "")
 
-# 4. 開催情報（デフォルト）
 YEAR = "2025"
 KAI = "04"
 PLACE = "02"
 DAY = "02"
 
-
 def set_race_params(year, kai, place, day):
-    """app.py から開催情報を受け取って上書き"""
     global YEAR, KAI, PLACE, DAY
     YEAR = str(year)
     KAI = str(kai).zfill(2)
@@ -54,7 +46,7 @@ def get_supabase_client() -> Client:
 def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, ai_answer):
     supabase = get_supabase_client()
     if supabase is None:
-        print("⚠ Supabase 未設定のため履歴保存スキップ")
+        print("⚠ Supabase 未設定 → 保存しません")
         return
 
     data = {
@@ -72,21 +64,20 @@ def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, 
         supabase.table("history").insert(data).execute()
         print("💾 履歴保存成功")
     except Exception as e:
-        print(f"⚠ 履歴保存失敗: {e}")
+        print("⚠ 履歴保存失敗:", e)
 
 
 # ==================================================
-# HTMLパース関数（前走インタビュー）
+# HTML パース
 # ==================================================
 def parse_zenkoso_interview(html: str):
-    """前走インタビュー（syoinページ）のパース"""
     soup = BeautifulSoup(html, "html.parser")
     h2 = soup.find("h2", string=lambda s: s and "前走のインタビュー" in s)
     if not h2:
         return []
 
-    midasi_div = h2.find_parent("div", class_="midasi")
-    table = midasi_div.find_next("table", class_="syoin")
+    midasi = h2.find_parent("div", class_="midasi")
+    table = midasi.find_next("table", class_="syoin")
     if not table or not table.tbody:
         return []
 
@@ -101,31 +92,30 @@ def parse_zenkoso_interview(html: str):
             continue
 
         waku_td = row.find("td", class_="waku")
-        umaban_td = row.find("td", class_="umaban")
+        uma_td = row.find("td", class_="umaban")
         bamei_td = row.find("td", class_="bamei")
-
-        if not (waku_td and umaban_td and bamei_td):
+        if not (waku_td and uma_td and bamei_td):
             i += 1
             continue
 
         waku = waku_td.get_text(strip=True)
-        umaban = umaban_td.get_text(strip=True)
+        umaban = uma_td.get_text(strip=True)
         name = bamei_td.get_text(strip=True)
 
-        prev_date_course = ""
+        prev_date = ""
         prev_class = ""
         prev_finish = ""
         prev_comment = ""
 
-        detail_row = rows[i + 1] if i + 1 < len(rows) else None
-        if detail_row:
-            syoin_td = detail_row.find("td", class_="syoin")
+        detail = rows[i + 1] if i + 1 < len(rows) else None
+        if detail:
+            syoin_td = detail.find("td", class_="syoin")
             if syoin_td:
-                syoindata = syoin_td.find("div", class_="syoindata")
-                if syoindata:
-                    ps = syoindata.find_all("p")
-                    if len(ps) >= 1:
-                        prev_date_course = ps[0].get_text(strip=True)
+                sdata = syoin_td.find("div", class_="syoindata")
+                if sdata:
+                    ps = sdata.find_all("p")
+                    if ps:
+                        prev_date = ps[0].get_text(strip=True)
                     if len(ps) >= 2:
                         spans = ps[1].find_all("span")
                         if len(spans) >= 1:
@@ -133,9 +123,9 @@ def parse_zenkoso_interview(html: str):
                         if len(spans) >= 2:
                             prev_finish = spans[1].get_text(strip=True)
 
-                direct_ps = syoin_td.find_all("p", recursive=False)
-                if direct_ps:
-                    txt = direct_ps[0].get_text(strip=True)
+                direct = syoin_td.find_all("p", recursive=False)
+                if direct:
+                    txt = direct[0].get_text(strip=True)
                     if txt != "－":
                         prev_comment = txt
 
@@ -143,126 +133,124 @@ def parse_zenkoso_interview(html: str):
             "waku": waku,
             "umaban": umaban,
             "name": name,
-            "prev_date_course": prev_date_course,
+            "prev_date_course": prev_date,
             "prev_class": prev_class,
             "prev_finish": prev_finish,
             "prev_comment": prev_comment,
         })
 
         i += 2
-        if i < len(rows) and "spacer" in (rows[i].get("class") or []):
-            i += 1
 
     return result
 
 
-# ==================================================
-# HTMLパース関数（厩舎の話）
-# ==================================================
 def parse_danwa_comments(html: str):
-    """厩舎の話（danwaテーブル）のパース"""
     soup = BeautifulSoup(html, "html.parser")
     table = soup.find("table", class_="danwa")
-    if not table or not table.tbody:
+    if not table:
         return {}
 
     danwa_dict = {}
-    rows = table.tbody.find_all("tr")
-    current_umaban = None
+    current = None
 
-    for row in rows:
-        umaban_td = row.find("td", class_="umaban")
-        if umaban_td:
-            current_umaban = umaban_td.get_text(strip=True)
+    for row in table.tbody.find_all("tr"):
+        uma_td = row.find("td", class_="umaban")
+        if uma_td:
+            current = uma_td.get_text(strip=True)
             continue
 
         danwa_td = row.find("td", class_="danwa")
-        if danwa_td and current_umaban:
-            danwa_dict[current_umaban] = danwa_td.get_text(strip=True)
-            current_umaban = None
+        if danwa_td and current:
+            danwa_dict[current] = danwa_td.get_text(strip=True)
+            current = None
 
     return danwa_dict
 
 
 # ==================================================
-# HTMLパース関数（調教）
+# ★ 調教ページ パース（完全版）
 # ==================================================
 def parse_cyokyo(html: str):
-    """
-    調教ページ（/cyokyo/）から、馬番ごとの調教テキストを抽出して dict で返す。
-
-    戻り値:
-        { "1": "調教テキスト...", "2": "調教テキスト...", ... }
-    """
     soup = BeautifulSoup(html, "html.parser")
+    cyokyo_dict = {}
 
-    # 調教コンテンツ全体
-    section = soup.find("div", class_="section")
+    h2 = soup.find("h2", string=lambda s: s and "調教" in s)
+    if h2:
+        root = h2.find_parent("div")
+        section = root.find_next_sibling("div", class_="section")
+    else:
+        section = soup
+
     if not section:
         return {}
 
-    cyokyo_dict = {}
-
-    # section 内の全ての tr から
-    # 「枠番（waku）＋ 馬番（umaban）＋ 馬名（kbamei）」が揃う行を
-    # 1頭分の先頭行とみなす
-    for row in section.find_all("tr"):
-        waku_td = row.find("td", class_="waku")
-        umaban_td = row.find("td", class_="umaban")
-        name_td = row.find("td", class_="kbamei")  # ★ 調教ページは kbamei
-
-        if not (waku_td and umaban_td and name_td):
+    tables = section.find_all("table", class_="cyokyo")
+    for tbl in tables:
+        tbody = tbl.find("tbody")
+        if not tbody:
             continue
 
-        umaban = umaban_td.get_text(strip=True)
+        rows = tbody.find_all("tr", recursive=False)
+        if not rows:
+            continue
 
-        # 先頭行（枠番／馬番／馬名／短評など）
+        header = rows[0]
+        uma_td = header.find("td", class_="umaban")
+        if not uma_td:
+            continue
+
+        umaban = uma_td.get_text(strip=True)
+
         header_text = " ".join(
             td.get_text(" ", strip=True)
-            for td in row.find_all("td")
-            if td.get_text(strip=True)
+            for td in header.find_all("td")
         )
 
-        texts = []
-        if header_text:
-            texts.append(header_text)
+        detail_text = ""
+        if len(rows) >= 2:
+            detail_text = rows[1].get_text(" ", strip=True)
 
-        # 直後の兄弟 tr が、この馬の調教詳細（colspan=5 の行）
-        detail_row = row.next_sibling
-        while detail_row is not None and not isinstance(detail_row, Tag):
-            detail_row = detail_row.next_sibling
-
-        if isinstance(detail_row, Tag) and detail_row.name == "tr":
-            detail_text = detail_row.get_text(" ", strip=True)
-            if detail_text:
-                texts.append(detail_text)
-
-        if texts:
-            cyokyo_dict[umaban] = " ".join(texts).strip()
-
-    # デバッグしたいとき用
-    # print("DEBUG cyokyo_dict keys:", list(cyokyo_dict.keys()))
+        final_text = " ".join([header_text, detail_text]).strip()
+        cyokyo_dict[umaban] = final_text
 
     return cyokyo_dict
+
+
+# ==================================================
+# 調教取得関数
+# ==================================================
+BASE_URL = "https://s.keibabook.co.jp"
+
+def fetch_cyokyo_dict(driver, race_id: str):
+    url = f"{BASE_URL}/cyuou/cyokyo/0/{race_id}"
+    driver.get(url)
+
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table.cyokyo"))
+        )
+    except:
+        return {}
+
+    html = driver.page_source
+    cy = parse_cyokyo(html)
+
+    print("★DEBUG 調教:", cy)
+    return cy
 
 
 # ==================================================
 # メイン処理
 # ==================================================
 def run_all_races(target_races=None):
-    """
-    target_races = [3, 5, 7] のように渡すと、そのレースだけ実行。
-    None（未指定）の場合は 1〜12R すべて実行。
-    """
 
-    # レース番号の決定
-    if target_races is None:
-        race_numbers = list(range(1, 13))
-    else:
-        race_numbers = sorted({int(r) for r in target_races})
+    race_numbers = (
+        list(range(1, 13))
+        if target_races is None
+        else sorted({int(r) for r in target_races})
+    )
 
-    base_race_id = f"{YEAR}{KAI}{PLACE}{DAY}"
-
+    base_id = f"{YEAR}{KAI}{PLACE}{DAY}"
     place_names = {
         "00": "京都", "01": "阪神", "02": "中京", "03": "小倉",
         "04": "東京", "05": "中山", "06": "福島", "07": "新潟",
@@ -270,14 +258,10 @@ def run_all_races(target_races=None):
     }
     place_name = place_names.get(PLACE, "不明")
 
-    print(f"🔥 実行レース：{race_numbers}")
-
-    # Selenium 設定
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-
     driver = webdriver.Chrome(options=options)
 
     try:
@@ -292,100 +276,56 @@ def run_all_races(target_races=None):
             EC.visibility_of_element_located((By.CSS_SELECTOR, "input[type='password']"))
         ).send_keys(KEIBA_PASS)
 
-        try:
-            WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.CLASS_NAME, "btn-login"))
-            ).click()
-        except:
-            WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='submit']"))
-            ).click()
+        WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='submit'], .btn-login"))
+        ).click()
 
         time.sleep(2)
 
-        # ★ターゲットレースのみ実行
-        for i in race_numbers:
-            race_num_str = f"{i:02}"
-            current_race_id = base_race_id + race_num_str
+        # 各R処理
+        for r in race_numbers:
+            race_num = f"{r:02}"
+            race_id = base_id + race_num
 
-            print(f"\n=== {i}R 開始 ===")
+            print(f"\n=== {r}R ===")
 
-            # 1. 厩舎コメントページ
-            url_danwa = f"https://s.keibabook.co.jp/cyuou/danwa/0/{current_race_id}"
+            # 厩舎コメント
+            url_danwa = f"https://s.keibabook.co.jp/cyuou/danwa/0/{race_id}"
             driver.get(url_danwa)
             time.sleep(1)
 
-            if "login" in driver.current_url:
-                print("⚠ ログイン切れ → このレースをスキップ")
-                continue
-
-            try:
-                title_block = WebDriverWait(driver, 5).until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, "div.racetitle"))
-                )
-                race_title = title_block.text.strip()
-            except:
-                race_title = f"{place_name} {i}R"
-
             html_danwa = driver.page_source
-            danwa_data = parse_danwa_comments(html_danwa)
+            danwa_dict = parse_danwa_comments(html_danwa)
 
-            # 2. 前走インタビュー
-            url_interview = f"https://s.keibabook.co.jp/cyuou/syoin/{current_race_id}"
-            driver.get(url_interview)
+            # 前走インタビュー
+            url_inter = f"https://s.keibabook.co.jp/cyuou/syoin/{race_id}"
+            driver.get(url_inter)
             time.sleep(1)
+            zenkoso = parse_zenkoso_interview(driver.page_source)
 
-            html_interview = driver.page_source
-            zenkoso_list = parse_zenkoso_interview(html_interview)
+            # 調教
+            cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
 
-            # 3. 調教ページ
-            url_cyokyo = f"https://s.keibabook.co.jp/cyuou/cyokyo/0/{current_race_id}"
-            driver.get(url_cyokyo)
-            time.sleep(1)
-
-            html_cyokyo = driver.page_source
-            cyokyo_dict = parse_cyokyo(html_cyokyo)
-
-            # 4. マージ
-            merged_lines = []
-
-            if not zenkoso_list:
-                merged_lines.append("（データなし）")
-            else:
-                for horse in zenkoso_list:
-                    umaban = horse["umaban"]
-                    name = horse["name"]
-                    danwa = danwa_data.get(umaban, "（厩舎の話なし）")
-
-                    if horse["prev_date_course"]:
-                        prev_info = f"{horse['prev_date_course']} ({horse['prev_class']}) {horse['prev_finish']}"
-                    else:
-                        prev_info = "（前走情報なし）"
-
-                    prev_comment = horse["prev_comment"] or "（前走談話なし）"
-
-                    # ★ 調教情報を追加
-                    cyokyo_text = cyokyo_dict.get(umaban, "（調教情報なし）")
-
-                    block = (
-                        f"▼[枠{horse['waku']} 馬番{umaban}] {name}\n"
-                        f"  【厩舎の話】 {danwa}\n"
-                        f"  【前走情報】 {prev_info}\n"
-                        f"  【前走談話】 {prev_comment}\n"
-                        f"  【調教】 {cyokyo_text}\n"
-                    )
-                    merged_lines.append(block)
+            # マージ
+            merged = []
+            for h in zenkoso:
+                uma = h["umaban"]
+                text = (
+                    f"▼[枠{h['waku']} 馬番{uma}] {h['name']}\n"
+                    f"  【厩舎の話】 {danwa_dict.get(uma, '（厩舎コメントなし）')}\n"
+                    f"  【前走情報】 {h['prev_date_course']} ({h['prev_class']}) {h['prev_finish']}\n"
+                    f"  【前走談話】 {h['prev_comment'] or '（前走談話なし）'}\n"
+                    f"  【調教】 {cyokyo_dict.get(uma, '（調教情報なし）')}\n"
+                )
+                merged.append(text)
 
             full_text = (
-                f"以下は{place_name}{i}Rの全頭データである。"
-                f"各馬について【厩舎の話】【前走情報・前走談話】【調教】を基に、"
-                f"先に与えられたSYSTEMプロンプトのルールに従って分析せよ。\n\n"
-                f"■レース情報\n{race_title}\n\n"
+                f"以下は{place_name}{r}Rの全頭データである。"
+                f"各馬について【厩舎の話】【前走情報・前走談話】【調教】を基に分析せよ。\n\n"
                 f"■出走馬詳細データ\n" +
-                "\n".join(merged_lines)
+                "\n".join(merged)
             )
 
-            # 5. Dify API 呼び出し
             payload = {
                 "inputs": {"text": full_text},
                 "response_mode": "blocking",
@@ -397,28 +337,20 @@ def run_all_races(target_races=None):
                 "Content-Type": "application/json",
             }
 
-            res = requests.post(
-                "https://api.dify.ai/v1/workflows/run",
-                headers=headers,
-                json=payload
-            )
+            res = requests.post("https://api.dify.ai/v1/workflows/run",
+                                headers=headers, json=payload)
 
             if res.status_code == 200:
-                data = res.json()
-                ai_answer = (
-                    data.get("data", {})
-                    .get("outputs", {})
-                    .get("answer", "")
-                )
-
-                st.markdown(f"### {place_name} {i}R")
-                st.write(ai_answer)
+                ans = res.json().get("data", {}).get("outputs", {}).get("answer", "")
+                st.markdown(f"### {place_name} {r}R")
+                st.write(ans)
                 st.write("---")
 
                 save_history(YEAR, KAI, PLACE, place_name, DAY,
-                             race_num_str, current_race_id, ai_answer)
+                             race_num, race_id, ans)
+
             else:
-                print(f"❌ Dify エラー: {res.status_code} {res.text}")
+                print("❌ Dify エラー:", res.status_code, res.text)
 
     finally:
         print("\n🧹 ブラウザ終了")
