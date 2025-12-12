@@ -69,6 +69,59 @@ def save_history(year, kai, place_code, place_name, day, race_num_str, race_id, 
 
 
 # ==================================================
+# HTML パース（レース情報：距離・コース・馬場など）
+# ==================================================
+def parse_race_info(html: str):
+    """
+    厩舎の話ページの HTML からレース情報を抜き出す。
+    例：
+      2025年12月7日 5回中京2日目
+      1R ２歳未勝利
+      [指定],(混)
+      1800m (ダート・左) 晴・良 平　　穏
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    racetitle = soup.find("div", class_="racetitle")
+    if not racetitle:
+        return {
+            "date_meet": "",
+            "race_name": "",
+            "cond1": "",
+            "course_line": "",
+        }
+
+    # 上段（開催日＋レース名）
+    racemei = racetitle.find("div", class_="racemei")
+    date_meet = ""
+    race_name = ""
+    if racemei:
+        ps = racemei.find_all("p")
+        if len(ps) >= 1:
+            date_meet = ps[0].get_text(strip=True)
+        if len(ps) >= 2:
+            race_name = ps[1].get_text(strip=True)
+
+    # 下段（[指定],(混) ／ 距離・コース・天候・馬場など）
+    racetitle_sub = racetitle.find("div", class_="racetitle_sub")
+    cond1 = ""
+    course_line = ""
+    if racetitle_sub:
+        sub_ps = racetitle_sub.find_all("p")
+        if len(sub_ps) >= 1:
+            cond1 = sub_ps[0].get_text(strip=True)  # [指定],(混) など
+        if len(sub_ps) >= 2:
+            # "1800m (ダート・左) 晴・良 平　　穏" の行
+            course_line = sub_ps[1].get_text(" ", strip=True)
+
+    return {
+        "date_meet": date_meet,
+        "race_name": race_name,
+        "cond1": cond1,
+        "course_line": course_line,
+    }
+
+
+# ==================================================
 # HTML パース（前走インタビュー）
 # ==================================================
 def parse_zenkoso_interview(html: str):
@@ -229,7 +282,7 @@ def parse_cyokyo(html: str):
             # 行内のテキストをすべて空白区切りで連結
             detail_text = detail_row.get_text(" ", strip=True)
 
-        # 好きな形に整形（ここを好みで変えてOK）
+        # 好きな形に整形
         final_text = f"【馬名】{bamei}（馬番{umaban}） 【短評】{tanpyo} 【調教詳細】{detail_text}"
         cyokyo_dict[umaban] = final_text
 
@@ -316,15 +369,17 @@ def run_all_races(target_races=None):
 
             print(f"\n=== {place_name} {r}R ({race_id}) ===")
 
-            # 厩舎コメント
+            # 厩舎コメント（＋ここでレース情報も取る）
             url_danwa = f"https://s.keibabook.co.jp/cyuou/danwa/0/{race_id}"
             print("★DEBUG 厩舎コメント URL:", url_danwa)
             driver.get(url_danwa)
             time.sleep(1)
 
             html_danwa = driver.page_source
+            race_info = parse_race_info(html_danwa)
             danwa_dict = parse_danwa_comments(html_danwa)
             print("★DEBUG 厩舎コメント dict keys:", list(danwa_dict.keys()))
+            print("★DEBUG レース情報:", race_info)
 
             # 前走インタビュー
             url_inter = f"https://s.keibabook.co.jp/cyuou/syoin/{race_id}"
@@ -337,7 +392,7 @@ def run_all_races(target_races=None):
             # 調教
             cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
 
-            # マージ
+            # 馬ごとにマージ
             merged = []
             for h in zenkoso:
                 uma = h["umaban"]
@@ -350,7 +405,23 @@ def run_all_races(target_races=None):
                 )
                 merged.append(text)
 
+            # レース情報テキスト整形
+            race_header_lines = []
+            if race_info["date_meet"]:
+                race_header_lines.append(race_info["date_meet"])
+            if race_info["race_name"]:
+                race_header_lines.append(race_info["race_name"])
+            if race_info["cond1"]:
+                race_header_lines.append(race_info["cond1"])
+            if race_info["course_line"]:
+                # ここに「1800m (ダート・左) 晴・良 平　　穏」が入る
+                race_header_lines.append(race_info["course_line"])
+
+            race_header = "\n".join(race_header_lines)
+
             full_text = (
+                f"■レース情報\n"
+                f"{race_header}\n\n"
                 f"以下は{place_name}{r}Rの全頭データである。"
                 f"各馬について【厩舎の話】【前走情報・前走談話】【調教】を基に分析せよ。\n\n"
                 f"■出走馬詳細データ\n" +
@@ -368,8 +439,11 @@ def run_all_races(target_races=None):
                 "Content-Type": "application/json",
             }
 
-            res = requests.post("https://api.dify.ai/v1/workflows/run",
-                                headers=headers, json=payload)
+            res = requests.post(
+                "https://api.dify.ai/v1/workflows/run",
+                headers=headers,
+                json=payload
+            )
 
             if res.status_code == 200:
                 ans = res.json().get("data", {}).get("outputs", {}).get("answer", "")
