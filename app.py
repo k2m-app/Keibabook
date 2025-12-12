@@ -115,4 +115,19 @@ if mode == "予想する":
             selected_races.append(i)
 
     st.write(f"### 設定: {year}年 {kai}回 {place_name} {day}日目")
-    st.write("サイドバーでレースを選んでから、ボタンを押すと分析を開始します。
+    st.write("サイドバーでレースを選んでから、ボタンを押すと分析を開始します。")
+
+    if st.button("分析スタート 🚀"):
+        if not selected_races:
+            st.warning("少なくとも1つのレースを選んでください。")
+        else:
+            with st.spinner("分析中...これには数分かかります..."):
+                try:
+                    keiba_bot.set_race_params(year, kai, place_code, day)
+                    keiba_bot.run_all_races(target_races=selected_races)
+                    st.success(f"{', '.join(f'{r}R' for r in selected_races)} の分析が完了しました！")
+                except Exception as e:
+                    st.error(f"エラーが発生しました: {e}")
+
+elif mode == "直近1週間の履歴を見る":
+    show_history()
