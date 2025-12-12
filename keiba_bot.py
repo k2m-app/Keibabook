@@ -474,10 +474,10 @@ def run_all_races(target_races=None):
                     uma = h["umaban"]
                     text = (
                         f"▼[枠{h['waku']} 馬番{uma}] {h['name']}\n"
-                        f"  【厩舎の話】 {danwa_dict.get(uma, '（厩舎コメントなし）')}\n"
+                        f"  【厩舎の話】 {danwa_dict.get(uma, '（無し）')}\n"
                         f"  【前走情報】 {h['prev_date_course']} ({h['prev_class']}) {h['prev_finish']}\n"
-                        f"  【前走談話】 {h['prev_comment'] or '（前走談話なし）'}\n"
-                        f"  【調教】 {cyokyo_dict.get(uma, '（調教情報なし）')}\n"
+                        f"  【前走談話】 {h['prev_comment'] or '（無し）'}\n"
+                        f"  【調教】 {cyokyo_dict.get(uma, '（無し）')}\n"
                     )
                     merged.append(text)
 
@@ -578,3 +578,4 @@ def run_all_races(target_races=None):
 
     finally:
         driver.quit()
+
