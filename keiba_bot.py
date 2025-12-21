@@ -80,7 +80,7 @@ def save_history(
 
 
 # ==================================================
-# HTML パース関数群 (変更なし)
+# HTML パース関数群
 # ==================================================
 def parse_race_info(html: str):
     soup = BeautifulSoup(html, "html.parser")
@@ -117,21 +117,31 @@ def parse_race_info(html: str):
 
 
 def parse_zenkoso_interview(html: str):
+    """
+    【修正版】前走インタビューを取得し、馬番をキーにした辞書を返す。
+    構造変更に強くし、データがない場合も空辞書を返して処理を止めない。
+    """
     soup = BeautifulSoup(html, "html.parser")
-    h2 = soup.find("h2", string=lambda s: s and "前走のインタビュー" in s)
+    # "前走"を含むh2タグを探す
+    h2 = soup.find("h2", string=lambda s: s and "前走" in s)
+    
+    # h2がない場合は空の辞書を返す
     if not h2:
-        return []
+        return {}
 
-    midasi = h2.find_parent("div", class_="midasi")
-    table = midasi.find_next("table", class_="syoin")
+    # 親要素(div.midasi)を経由せず、h2の「次にある」syoinテーブルを直接探す
+    table = h2.find_next("table", class_="syoin")
+    
     if not table or not table.tbody:
-        return []
+        return {}
 
     rows = table.tbody.find_all("tr")
-    result = []
+    result_dict = {}  # 辞書型に変更
+    
     i = 0
     while i < len(rows):
         row = rows[i]
+        # spacerクラスなどはスキップ
         if "spacer" in (row.get("class") or []):
             i += 1
             continue
@@ -139,6 +149,8 @@ def parse_zenkoso_interview(html: str):
         waku_td = row.find("td", class_="waku")
         uma_td = row.find("td", class_="umaban")
         bamei_td = row.find("td", class_="bamei")
+        
+        # 必須項目がない行はスキップ
         if not (waku_td and uma_td and bamei_td):
             i += 1
             continue
@@ -152,6 +164,7 @@ def parse_zenkoso_interview(html: str):
         prev_finish = ""
         prev_comment = ""
 
+        # 次の行（詳細データ）があるか確認
         detail = rows[i + 1] if i + 1 < len(rows) else None
         if detail:
             syoin_td = detail.find("td", class_="syoin")
@@ -174,7 +187,8 @@ def parse_zenkoso_interview(html: str):
                     if txt != "－":
                         prev_comment = txt
 
-        result.append({
+        # 辞書に保存 (Key: 馬番)
+        result_dict[umaban] = {
             "waku": waku,
             "umaban": umaban,
             "name": name,
@@ -182,9 +196,10 @@ def parse_zenkoso_interview(html: str):
             "prev_class": prev_class,
             "prev_finish": prev_finish,
             "prev_comment": prev_comment,
-        })
+        }
         i += 2
-    return result
+        
+    return result_dict
 
 
 def parse_danwa_comments(html: str):
@@ -258,7 +273,7 @@ def fetch_cyokyo_dict(driver, race_id: str):
 
 
 # ==================================================
-# ★Dify ワークフロー用ストリーミング関数 (強化版)
+# ★Dify ワークフロー用ストリーミング関数
 # ==================================================
 def stream_dify_workflow(full_text: str):
     """
@@ -417,25 +432,56 @@ def run_all_races(target_races=None):
                 race_info = parse_race_info(html_danwa)
                 danwa_dict = parse_danwa_comments(html_danwa)
 
-                # A-2. 前走インタビュー
+                # A-2. 前走インタビュー (修正後の関数により辞書が返る)
                 url_inter = f"https://s.keibabook.co.jp/cyuou/syoin/{race_id}"
                 driver.get(url_inter)
                 time.sleep(1)
-                zenkoso = parse_zenkoso_interview(driver.page_source)
+                zenkoso_dict = parse_zenkoso_interview(driver.page_source)
 
                 # A-3. 調教
                 cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
 
-                # A-4. データ結合
+                # ==================================================
+                # 【修正版】 A-4. データ結合ロジック
+                # ==================================================
                 merged = []
-                for h in zenkoso:
-                    uma = h["umaban"]
+                
+                # 全てのデータソースから「存在する馬番」のセットを作る
+                # (前走インタビューがないレースでも、調教や厩舎コメントはあるため)
+                all_umabans = set(danwa_dict.keys()) | set(zenkoso_dict.keys()) | set(cyokyo_dict.keys())
+                
+                # 馬番順にソート (文字列なので int に変換してソート)
+                sorted_umabans = sorted(list(all_umabans), key=lambda x: int(x) if x.isdigit() else 999)
+
+                for uma in sorted_umabans:
+                    # 厩舎コメント
+                    d_comment = danwa_dict.get(uma, '（情報なし）')
+                    
+                    # 調教
+                    c_data = cyokyo_dict.get(uma, '（情報なし）')
+                    
+                    # 前走データ
+                    z_data = zenkoso_dict.get(uma, {})
+                    z_name = z_data.get("name", "名称不明")
+                    z_waku = z_data.get("waku", "?")
+                    z_prev_info = f"{z_data.get('prev_date_course','')} {z_data.get('prev_class','')} {z_data.get('prev_finish','')}"
+                    z_comment = z_data.get("prev_comment", "（無し）")
+
+                    # もし前走データから名前が取れない場合（新馬戦などで前走ページがない場合）、
+                    # 調教データから名前を補完する
+                    if z_name == "名称不明" and "【馬名】" in c_data:
+                         try:
+                             # 調教データの "【馬名】xxxxx（馬番" の部分から名前を抽出
+                             z_name = c_data.split("【馬名】")[1].split("（")[0]
+                         except:
+                             pass
+
                     text = (
-                        f"▼[枠{h['waku']} 馬番{uma}] {h['name']}\n"
-                        f"  【厩舎の話】 {danwa_dict.get(uma, '（無し）')}\n"
-                        f"  【前走情報】 {h['prev_date_course']} ({h['prev_class']}) {h['prev_finish']}\n"
-                        f"  【前走談話】 {h['prev_comment'] or '（無し）'}\n"
-                        f"  【調教】 {cyokyo_dict.get(uma, '（無し）')}\n"
+                        f"▼[枠{z_waku} 馬番{uma}] {z_name}\n"
+                        f"  【厩舎の話】 {d_comment}\n"
+                        f"  【前走情報】 {z_prev_info}\n"
+                        f"  【前走談話】 {z_comment}\n"
+                        f"  【調教】 {c_data}\n"
                     )
                     merged.append(text)
 
