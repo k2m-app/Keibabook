@@ -196,7 +196,7 @@ def parse_zenkoso_interview(html: str):
 
 def parse_danwa_comments(html: str):
     """
-    【修正版】厩舎の話を取得。
+    厩舎の話を取得。
     新馬戦などで馬番(td.umaban)が空または存在しない場合、
     馬名(td.bamei)をキーとしてデータを確保するロジックを追加。
     """
@@ -322,7 +322,7 @@ def fetch_cyokyo_dict(driver, race_id: str):
 # ==================================================
 def stream_dify_workflow(full_text: str):
     if not DIFY_API_KEY:
-        yield "⚠️ エラー: DIFY_API_KEY が設定されていません。"
+        yield "⚠️ エラー: DIFY_API_KEY が未設定"
         return
 
     payload = {
@@ -409,7 +409,7 @@ def run_all_races(target_races=None):
     driver = webdriver.Chrome(options=options)
 
     try:
-        st.info("🔑 競馬ブックへログイン中...")
+        st.info("🔑 ログイン中...")
         driver.get("https://s.keibabook.co.jp/login/login")
         
         WebDriverWait(driver, 10).until(
@@ -425,7 +425,7 @@ def run_all_races(target_races=None):
         ).click()
         
         time.sleep(2) 
-        st.success("ログイン成功。レース分析を開始します。")
+        st.success("レース分析を開始します")
 
         for r in race_numbers:
             race_num = f"{r:02}"
@@ -553,3 +553,4 @@ def run_all_races(target_races=None):
 
     finally:
         driver.quit()
+
