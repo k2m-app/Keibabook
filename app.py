@@ -15,7 +15,28 @@ if "selected_races" not in st.session_state:
     st.session_state.selected_races = set()
 
 if "meet_candidates" not in st.session_state:
-    st.session_state.meet_candidates = []  # [{"meet10":..., "year":..., ...}, ...]
+    st.session_state.meet_candidates = []
+
+# race_1〜race_12 の初期化（ここでのみ初期値を作る）
+# 以後、checkboxには value= を渡さない（session_stateが唯一の正）
+for i in range(1, 13):
+    k = f"race_{i}"
+    if k not in st.session_state:
+        st.session_state[k] = (i in st.session_state.selected_races)
+
+def sync_selected_races_from_checks():
+    """チェック状態 -> selected_races へ同期"""
+    st.session_state.selected_races = {i for i in range(1, 13) if st.session_state[f"race_{i}"]}
+
+def set_all_races():
+    for i in range(1, 13):
+        st.session_state[f"race_{i}"] = True
+    sync_selected_races_from_checks()
+
+def clear_all_races():
+    for i in range(1, 13):
+        st.session_state[f"race_{i}"] = False
+    sync_selected_races_from_checks()
 
 # -----------------------------
 # Sidebar
@@ -34,7 +55,6 @@ if st.sidebar.button("📌 直近の開催候補を取得（複数場対応）")
         st.session_state.meet_candidates = []
         st.sidebar.error("開催候補を検出できませんでした（導線なし/ページ構造変更等）。")
 
-# 候補があれば選べるUI
 if st.session_state.meet_candidates:
     def fmt(c):
         return f"{c['year']}年 {c['kai']}回 {c['place_name']} {c['day']}日目（{c['meet10']}）"
@@ -49,7 +69,6 @@ if st.session_state.meet_candidates:
         keiba_bot.set_race_params(selected["year"], selected["kai"], selected["place"], selected["day"])
         st.sidebar.success(f"採用: {fmt(selected)}")
 
-# 現在値（自動採用 or 手動設定後）
 cur_year, cur_kai, cur_place, cur_day = keiba_bot.get_current_params()
 
 st.sidebar.subheader("開催パラメータ（手動修正OK）")
@@ -68,32 +87,18 @@ if st.sidebar.button("✅ 手動設定を反映"):
     st.sidebar.success("開催パラメータを反映しました。")
 
 # -----------------------------
-# メイン
+# Main
 # -----------------------------
 st.title("KeibaBook AI（開催選択→レース選択→実行）")
 
-# 開催表示
 y, k, p, d = keiba_bot.get_current_params()
 place_name = PLACE_NAMES.get(p, "不明")
 st.info(f"現在の開催：{y}年 {k}回 {place_name} {d}日目")
 
 st.divider()
 
-# -----------------------------
-# レース選択 UI（全レース選択が確実に入る設計）
-# -----------------------------
+# レース選択 UI
 colA, colB, colC = st.columns([1, 1, 2])
-
-def set_all_races():
-    st.session_state.selected_races = set(range(1, 13))
-    # チェックボックス側 state も揃える
-    for i in range(1, 13):
-        st.session_state[f"race_{i}"] = True
-
-def clear_all_races():
-    st.session_state.selected_races = set()
-    for i in range(1, 13):
-        st.session_state[f"race_{i}"] = False
 
 with colA:
     if st.button("✅ 全レース選択"):
@@ -104,31 +109,21 @@ with colB:
         clear_all_races()
 
 with colC:
-    st.caption("チェック状態は保持されます。全レース選択は state を直接更新して必ず反映します。")
+    st.caption("チェック状態は session_state のみで管理（value= を渡さない）のでエラーになりません。")
 
 st.subheader("レース選択（1〜12R）")
 
 grid = st.columns(6)
 for i in range(1, 13):
     col = grid[(i - 1) % 6]
-    key = f"race_{i}"
+    with col:
+        st.checkbox(f"{i}R", key=f"race_{i}")  # value=は渡さない
 
-    # state が無ければ selected_races を初期値に
-    if key not in st.session_state:
-        st.session_state[key] = (i in st.session_state.selected_races)
-
-    val = col.checkbox(f"{i}R", value=st.session_state[key], key=key)
-
-    if val:
-        st.session_state.selected_races.add(i)
-    else:
-        st.session_state.selected_races.discard(i)
+# チェックボックス描画後に同期
+sync_selected_races_from_checks()
 
 st.divider()
 
-# -----------------------------
-# 実行
-# -----------------------------
 run_mode = st.radio(
     "実行モード",
     options=["選択レースだけ実行", "全レース実行（1〜12）"],
