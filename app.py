@@ -14,28 +14,42 @@ PLACE_NAMES = {
 if "selected_races" not in st.session_state:
     st.session_state.selected_races = set()
 
-if "auto_params" not in st.session_state:
-    st.session_state.auto_params = None  # (year,kai,place,day)
+if "meet_candidates" not in st.session_state:
+    st.session_state.meet_candidates = []  # [{"meet10":..., "year":..., ...}, ...]
 
 # -----------------------------
 # Sidebar
 # -----------------------------
 st.sidebar.title("設定")
+st.sidebar.caption("1) 直近開催候補を取得 → 2) 開催選択 → 3) レース選択 → 4) 実行")
 
-st.sidebar.caption("1) 自動で直近開催を取得 → 2) レース選択 → 3) 実行")
+if st.sidebar.button("📌 直近の開催候補を取得（複数場対応）"):
+    with st.spinner("Keibabookへログインして開催候補を検出中..."):
+        candidates = keiba_bot.auto_detect_meet_candidates()
 
-if st.sidebar.button("📌 直近の開催を自動取得"):
-    with st.spinner("Keibabookへログインして直近開催を検出中..."):
-        params = keiba_bot.auto_detect_meet_params()
-    if params:
-        st.session_state.auto_params = params
-        year, kai, place, day = params
-        keiba_bot.set_race_params(year, kai, place, day)
-        st.sidebar.success(f"自動取得: {year}-{kai}-{PLACE_NAMES.get(place,'?')}-{day}日目")
+    if candidates:
+        st.session_state.meet_candidates = candidates
+        st.sidebar.success(f"候補 {len(candidates)}件を検出しました")
     else:
-        st.sidebar.error("直近開催を検出できませんでした（ページ構造変更/導線なし等）。")
+        st.session_state.meet_candidates = []
+        st.sidebar.error("開催候補を検出できませんでした（導線なし/ページ構造変更等）。")
 
-# 現在値（自動取得後はそれが入る）
+# 候補があれば選べるUI
+if st.session_state.meet_candidates:
+    def fmt(c):
+        return f"{c['year']}年 {c['kai']}回 {c['place_name']} {c['day']}日目（{c['meet10']}）"
+
+    selected = st.sidebar.selectbox(
+        "検出された開催から選択",
+        options=st.session_state.meet_candidates,
+        format_func=fmt
+    )
+
+    if st.sidebar.button("✅ この開催を採用"):
+        keiba_bot.set_race_params(selected["year"], selected["kai"], selected["place"], selected["day"])
+        st.sidebar.success(f"採用: {fmt(selected)}")
+
+# 現在値（自動採用 or 手動設定後）
 cur_year, cur_kai, cur_place, cur_day = keiba_bot.get_current_params()
 
 st.sidebar.subheader("開催パラメータ（手動修正OK）")
@@ -49,22 +63,37 @@ place = st.sidebar.selectbox(
 )
 day = st.sidebar.text_input("日 (2桁)", value=cur_day)
 
-if st.sidebar.button("✅ この開催に設定"):
+if st.sidebar.button("✅ 手動設定を反映"):
     keiba_bot.set_race_params(year, kai, place, day)
     st.sidebar.success("開催パラメータを反映しました。")
 
 # -----------------------------
-# レース選択 UI
+# メイン
 # -----------------------------
-st.title("KeibaBook AI（全レース/指定レース 実行）")
+st.title("KeibaBook AI（開催選択→レース選択→実行）")
 
+# 開催表示
+y, k, p, d = keiba_bot.get_current_params()
+place_name = PLACE_NAMES.get(p, "不明")
+st.info(f"現在の開催：{y}年 {k}回 {place_name} {d}日目")
+
+st.divider()
+
+# -----------------------------
+# レース選択 UI（全レース選択が確実に入る設計）
+# -----------------------------
 colA, colB, colC = st.columns([1, 1, 2])
 
 def set_all_races():
     st.session_state.selected_races = set(range(1, 13))
+    # チェックボックス側 state も揃える
+    for i in range(1, 13):
+        st.session_state[f"race_{i}"] = True
 
 def clear_all_races():
     st.session_state.selected_races = set()
+    for i in range(1, 13):
+        st.session_state[f"race_{i}"] = False
 
 with colA:
     if st.button("✅ 全レース選択"):
@@ -75,9 +104,8 @@ with colB:
         clear_all_races()
 
 with colC:
-    st.caption("チェックボックスは状態保持されます（全レース選択も確実に入る設計）。")
+    st.caption("チェック状態は保持されます。全レース選択は state を直接更新して必ず反映します。")
 
-# チェックボックス 1~12
 st.subheader("レース選択（1〜12R）")
 
 grid = st.columns(6)
@@ -85,10 +113,12 @@ for i in range(1, 13):
     col = grid[(i - 1) % 6]
     key = f"race_{i}"
 
-    # 既存stateから初期値
-    initial = (i in st.session_state.selected_races)
+    # state が無ければ selected_races を初期値に
+    if key not in st.session_state:
+        st.session_state[key] = (i in st.session_state.selected_races)
 
-    val = col.checkbox(f"{i}R", value=initial, key=key)
+    val = col.checkbox(f"{i}R", value=st.session_state[key], key=key)
+
     if val:
         st.session_state.selected_races.add(i)
     else:
