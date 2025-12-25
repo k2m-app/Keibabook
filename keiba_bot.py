@@ -720,9 +720,7 @@ def run_all_races(target_races=None):
                 full_text = (
                     "■レース情報\n"
                     f"{race_header}\n\n"
-                    f"以下は{place_name}{r}Rの全頭データである。\n"
-                    "入力に含まれる事実のみ（騎手/厩舎の話/前走談話(あれば)/調教）を用い、推測はしない。\n"
-                    "出力は必ず全頭分。馬番をキーにし、欠損は（情報なし）等で明示。\n\n"
+                    f"以下は{place_name}{r}Rの全頭データ。\n"
                     "■出走馬詳細データ\n"
                     + merged_text
                 )
@@ -754,3 +752,4 @@ def run_all_races(target_races=None):
             driver.quit()
         except Exception:
             pass
+
