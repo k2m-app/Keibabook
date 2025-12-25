@@ -50,7 +50,7 @@ def get_current_params():
 
 
 # ==================================================
-# Supabase クライアント
+# Supabase
 # ==================================================
 @st.cache_resource
 def get_supabase_client() -> Client | None:
@@ -92,16 +92,15 @@ def save_history(
 
 
 # ==================================================
-# Selenium（Chrome）生成
+# Selenium
 # ==================================================
 def build_driver() -> webdriver.Chrome:
     options = Options()
-    options.add_argument("--headless=new")  # 新しめの headless
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1280,2000")
-
+    options.add_argument("--window-size=1280,2200")
     driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(60)
     return driver
@@ -125,11 +124,11 @@ def login_keibabook(driver: webdriver.Chrome) -> None:
         EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='submit'], .btn-login"))
     ).click()
 
-    time.sleep(1.5)
+    time.sleep(1.2)
 
 
 # ==================================================
-# HTML パース関数群
+# Parser：共通
 # ==================================================
 def parse_race_info(html: str):
     soup = BeautifulSoup(html, "html.parser")
@@ -165,10 +164,50 @@ def parse_race_info(html: str):
     }
 
 
+def parse_danwa_comments(html: str):
+    """
+    厩舎の話を取得。
+    戻り値：{ "1": "コメント", ... }（馬番優先。無理なら馬名キー混在）
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", class_="danwa")
+    if not table or not table.tbody:
+        return {}
+
+    danwa_dict = {}
+    current_key = None
+
+    for row in table.tbody.find_all("tr"):
+        uma_td = row.find("td", class_="umaban")
+        bamei_td = row.find("td", class_="bamei")
+
+        # 馬番
+        if uma_td:
+            text = re.sub(r"\D", "", uma_td.get_text(strip=True))
+            if text:
+                current_key = text
+                continue
+
+        # 馬名（新馬等の揺れ対策）
+        if bamei_td and not current_key:
+            text = bamei_td.get_text(strip=True)
+            if text:
+                current_key = text
+                continue
+
+        # コメント本体
+        danwa_td = row.find("td", class_="danwa")
+        if danwa_td and current_key:
+            danwa_dict[current_key] = danwa_td.get_text(strip=True)
+            current_key = None
+
+    return danwa_dict
+
+
 def parse_zenkoso_interview(html: str):
     """
-    前走インタビューを取得。新馬戦などで存在しない場合は空辞書を返す。
-    戻り値：{ "1": {...}, "2": {...} } （馬番キー）
+    前走インタビュー（syoin）を取得。無い場合は {}。
+    戻り値：{ "1": {...}, ... }（馬番キー）
     """
     soup = BeautifulSoup(html, "html.parser")
     h2 = soup.find("h2", string=lambda s: s and "前走" in s)
@@ -244,48 +283,11 @@ def parse_zenkoso_interview(html: str):
     return result_dict
 
 
-def parse_danwa_comments(html: str):
-    """
-    厩舎の話を取得。
-    戻り値：{ "1": "コメント", ... }（馬番優先。無理なら馬名キーも混在し得る）
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    table = soup.find("table", class_="danwa")
-    if not table or not table.tbody:
-        return {}
-
-    danwa_dict = {}
-    current_key = None
-
-    for row in table.tbody.find_all("tr"):
-        uma_td = row.find("td", class_="umaban")
-        bamei_td = row.find("td", class_="bamei")
-
-        if uma_td:
-            text = re.sub(r"\D", "", uma_td.get_text(strip=True))
-            if text:
-                current_key = text
-                continue
-
-        if bamei_td and not current_key:
-            text = bamei_td.get_text(strip=True)
-            if text:
-                current_key = text
-                continue
-
-        danwa_td = row.find("td", class_="danwa")
-        if danwa_td and current_key:
-            danwa_dict[current_key] = danwa_td.get_text(strip=True)
-            current_key = None
-
-    return danwa_dict
-
-
 def parse_cyokyo(html: str):
     """
     調教データを取得。
     戻り値：
-      - 馬番キー: { "1": {"tanpyo":"", "detail":"" , "bamei_hint":""}, ... }
+      - 馬番キー: { "1": {"tanpyo":"", "detail":"", "bamei_hint":""}, ... }
       - 馬番が取れない場合：馬名キーで入ることがある（救済用）
     """
     soup = BeautifulSoup(html, "html.parser")
@@ -381,7 +383,7 @@ def parse_syutuba(html: str) -> dict:
 
 
 # ==================================================
-# fetch 関数群（Selenium）
+# fetch（Selenium）
 # ==================================================
 def fetch_danwa_dict(driver, race_id: str):
     url = f"{BASE_URL}/cyuou/danwa/0/{race_id}"
@@ -423,51 +425,81 @@ def fetch_syutuba_dict(driver, race_id: str):
 
 
 # ==================================================
-# racekey 自動検出（ログイン後）
+# 直近開催：複数候補検出
 # ==================================================
-def detect_latest_racekey(driver) -> str | None:
+def detect_meet_candidates(driver, max_candidates: int = 12):
     """
-    Keibabook内ページから /cyuou/syutuba/XXXXXXXXXXXX を拾って最新っぽいものを返す。
-    取れなければ None。
+    Keibabook内ページから syutuba racekey を拾い、
+    開催単位（YYYYKAIPLACEDAY = 10桁）でユニーク化して候補リストを返す。
+
+    return例:
+    [
+      {"meet10":"2025050401", "year":"2025","kai":"05","place":"04","day":"01","place_name":"東京"},
+      ...
+    ]
     """
-    # まず中央トップ
+    # 中央トップを起点（ここに複数場の導線がある想定）
     driver.get(f"{BASE_URL}/cyuou/")
     time.sleep(1.0)
     html = driver.page_source
 
-    keys = re.findall(r"/cyuou/syutuba/(\d{12})", html)
-    if not keys:
-        keys = re.findall(r"/cyuou/thursday/(\d{12})", html)
+    keys12 = re.findall(r"/cyuou/syutuba/(\d{12})", html)
+    if not keys12:
+        keys12 = re.findall(r"/cyuou/thursday/(\d{12})", html)
 
-    if not keys:
-        # 追加の保険：ログイン後ホーム
+    if not keys12:
+        # 追加の保険（ホーム）
         driver.get(f"{BASE_URL}/")
         time.sleep(1.0)
         html2 = driver.page_source
-        keys = re.findall(r"/cyuou/syutuba/(\d{12})", html2)
-        if not keys:
-            keys = re.findall(r"/cyuou/thursday/(\d{12})", html2)
+        keys12 = re.findall(r"/cyuou/syutuba/(\d{12})", html2)
+        if not keys12:
+            keys12 = re.findall(r"/cyuou/thursday/(\d{12})", html2)
 
-    if not keys:
-        return None
+    if not keys12:
+        return []
 
-    # 同日開催なら大抵 max でOK（YYYYKAI... の数値として大きい＝後）
-    return max(keys)
+    # 開催単位(10桁)でユニーク化
+    meet10_set = set(k[:10] for k in keys12 if len(k) >= 10)
+
+    # 直近っぽい順：数値降順
+    meet10_sorted = sorted(meet10_set, reverse=True)
+
+    candidates = []
+    for m10 in meet10_sorted[:max_candidates]:
+        year = m10[0:4]
+        kai = m10[4:6]
+        place = m10[6:8]
+        day = m10[8:10]
+        candidates.append({
+            "meet10": m10,
+            "year": year,
+            "kai": kai,
+            "place": place,
+            "day": day,
+            "place_name": PLACE_NAMES.get(place, "不明"),
+        })
+
+    return candidates
 
 
-def set_params_from_racekey(racekey12: str):
+def auto_detect_meet_candidates():
     """
-    racekey: YYYY(4) + KAI(2) + PLACE(2) + DAY(2) + RACE(2)
+    ログインして開催候補（複数）を返す。
     """
-    year = racekey12[0:4]
-    kai = racekey12[4:6]
-    place = racekey12[6:8]
-    day = racekey12[8:10]
-    set_race_params(year, kai, place, day)
+    driver = build_driver()
+    try:
+        login_keibabook(driver)
+        return detect_meet_candidates(driver)
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 
 # ==================================================
-# Dify ストリーミング
+# Dify（Streaming）
 # ==================================================
 def stream_dify_workflow(full_text: str):
     if not DIFY_API_KEY:
@@ -512,7 +544,6 @@ def stream_dify_workflow(full_text: str):
                 continue
 
             event = data.get("event")
-
             if event in ["workflow_started", "node_started", "node_finished"]:
                 continue
 
@@ -529,19 +560,20 @@ def stream_dify_workflow(full_text: str):
                             found_text += value + "\n"
                     if found_text.strip():
                         yield found_text.strip()
+
     except Exception as e:
         yield f"⚠️ Request Error: {str(e)}"
 
 
 # ==================================================
-# 便利：辞書の馬名キー救済
+# 結合用：馬名キー救済
 # ==================================================
 def _find_by_name_key(d: dict, bamei: str):
     if not bamei:
         return None
     if bamei in d:
         return d[bamei]
-    # 完全一致だけ（曖昧一致は事故源になるので抑制）
+    # 完全一致のみ（曖昧一致は事故源）
     for k, v in d.items():
         if (not str(k).isdigit()) and (str(k).strip() == bamei.strip()):
             return v
@@ -585,7 +617,7 @@ def run_all_races(target_races=None):
                 status_area.info(f"📡 {place_name}{r}R のデータを収集中...")
 
                 # A-1 danwa + race_info
-                html_danwa, race_info, danwa_dict = fetch_danwa_dict(driver, race_id)
+                _html_danwa, race_info, danwa_dict = fetch_danwa_dict(driver, race_id)
 
                 # A-2 syoin
                 zenkoso_dict = fetch_zenkoso_dict(driver, race_id)
@@ -599,7 +631,7 @@ def run_all_races(target_races=None):
                 if not syutuba_dict:
                     status_area.warning("⚠️ 出馬表が取得できませんでした（全頭保証できない可能性）。")
 
-                # A-4 結合（出馬表ベースで全頭保証）
+                # A-4 結合（出馬表ベース）
                 merged = []
                 umaban_list = (
                     sorted(syutuba_dict.keys(), key=lambda x: int(x))
@@ -644,7 +676,7 @@ def run_all_races(target_races=None):
                     else:
                         prev_block = "  【前走】 新馬（前走情報なし）\n"
 
-                    # 調教（短評＋詳細のみ）
+                    # 調教（短評＋詳細のみ）※馬名は出さない＝重複排除
                     c = cyokyo_dict.get(umaban)
                     if not c:
                         c = _find_by_name_key(cyokyo_dict, bamei)
@@ -671,7 +703,7 @@ def run_all_races(target_races=None):
                     st.write("---")
                     continue
 
-                # レースヘッダー（danwaページから抽出）
+                # レースヘッダー
                 race_header_lines = []
                 if race_info.get("date_meet"):
                     race_header_lines.append(race_info["date_meet"])
@@ -717,32 +749,6 @@ def run_all_races(target_races=None):
 
             st.write("---")
 
-    finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
-
-
-# ==================================================
-# 自動開催検出（UIから呼ぶ用）
-# ==================================================
-def auto_detect_meet_params() -> tuple[str, str, str, str] | None:
-    """
-    ログインして最新 racekey を拾い、YEAR/KAI/PLACE/DAY を返す。
-    失敗したら None。
-    """
-    driver = build_driver()
-    try:
-        login_keibabook(driver)
-        racekey = detect_latest_racekey(driver)
-        if not racekey:
-            return None
-        year = racekey[0:4]
-        kai = racekey[4:6]
-        place = racekey[6:8]
-        day = racekey[8:10]
-        return year, kai, place, day
     finally:
         try:
             driver.quit()
