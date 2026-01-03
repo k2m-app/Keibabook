@@ -342,8 +342,11 @@ def parse_cyokyo(html: str):
 def parse_syutuba(html: str) -> dict:
     """
     確定出馬(出馬表)ページから
-    { "1": {"umaban":"1","bamei":"ケイベエ","kisyu":"木幡巧"}, ... }
+    { "1": {"umaban":"1","bamei":"ケイベエ","kisyu":"木幡巧","kisyu_change":True}, ... }
     を返す。馬番を主キーにする。
+
+    ★ 騎手の文字が <b>（太字）になっている場合は「乗り替わり」と判定し、
+      kisyu_change=True を付与する。
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -371,13 +374,24 @@ def parse_syutuba(html: str) -> dict:
             bamei = kbamei_p.get_text(" ", strip=True)
 
         kisyu = ""
+        kisyu_change = False
         kisyu_p = tr.find("p", class_="kisyu")
         if kisyu_p:
+            # <b> が含まれていれば「乗り替わり」
+            kisyu_change = kisyu_p.find("b") is not None
+
             a = kisyu_p.find("a")
             if a:
                 kisyu = a.get_text(strip=True)
+            else:
+                kisyu = kisyu_p.get_text(" ", strip=True)
 
-        result[umaban] = {"umaban": umaban, "bamei": bamei, "kisyu": kisyu}
+        result[umaban] = {
+            "umaban": umaban,
+            "bamei": bamei,
+            "kisyu": kisyu,
+            "kisyu_change": kisyu_change,
+        }
 
     return result
 
@@ -645,7 +659,14 @@ def run_all_races(target_races=None):
                 for umaban in umaban_list:
                     sb = syutuba_dict.get(umaban, {})
                     bamei = (sb.get("bamei") or "").strip() or "名称不明"
-                    kisyu = (sb.get("kisyu") or "").strip() or "（騎手不明）"
+
+                    # ★ 乗り替わりの場合は「替・騎手名」にする（それ以外はそのまま）
+                    kisyu_raw = (sb.get("kisyu") or "").strip()
+                    kisyu_change = bool(sb.get("kisyu_change"))
+                    if kisyu_raw:
+                        kisyu = f"替・{kisyu_raw}" if kisyu_change else kisyu_raw
+                    else:
+                        kisyu = "（騎手不明）"
 
                     # 厩舎の話
                     d_comment = danwa_dict.get(umaban)
@@ -752,4 +773,3 @@ def run_all_races(target_races=None):
             driver.quit()
         except Exception:
             pass
-
