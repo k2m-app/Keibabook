@@ -345,8 +345,10 @@ def parse_syutuba(html: str) -> dict:
     { "1": {"umaban":"1","bamei":"ケイベエ","kisyu":"木幡巧","kisyu_change":True}, ... }
     を返す。馬番を主キーにする。
 
-    ★ 騎手の文字が <b>（太字）になっている場合は「乗り替わり」と判定し、
-      kisyu_change=True を付与する。
+    ★ 乗り替わりの騎手は HTML が
+      ... <a> <span class="norikawari">丸山元</span></a>
+      のようになるため、span.norikawari が存在すれば乗り替わりと判定し、
+      出力側で「替・騎手名」にする。
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -375,16 +377,25 @@ def parse_syutuba(html: str) -> dict:
 
         kisyu = ""
         kisyu_change = False
+
         kisyu_p = tr.find("p", class_="kisyu")
         if kisyu_p:
-            # <b> が含まれていれば「乗り替わり」
-            kisyu_change = kisyu_p.find("b") is not None
-
-            a = kisyu_p.find("a")
+            a = kisyu_p.find("a")  # 通常ここに騎手名が入る
             if a:
-                kisyu = a.get_text(strip=True)
+                norika = a.find("span", class_="norikawari")
+                if norika:
+                    kisyu_change = True
+                    kisyu = norika.get_text(strip=True)
+                else:
+                    kisyu = a.get_text(strip=True)
             else:
-                kisyu = kisyu_p.get_text(" ", strip=True)
+                # a が無い場合の保険
+                norika = kisyu_p.find("span", class_="norikawari")
+                if norika:
+                    kisyu_change = True
+                    kisyu = norika.get_text(strip=True)
+                else:
+                    kisyu = kisyu_p.get_text(" ", strip=True)
 
         result[umaban] = {
             "umaban": umaban,
@@ -452,7 +463,6 @@ def detect_meet_candidates(driver, max_candidates: int = 12):
       ...
     ]
     """
-    # 中央トップを起点（ここに複数場の導線がある想定）
     driver.get(f"{BASE_URL}/cyuou/")
     time.sleep(1.0)
     html = driver.page_source
@@ -462,7 +472,6 @@ def detect_meet_candidates(driver, max_candidates: int = 12):
         keys12 = re.findall(r"/cyuou/thursday/(\d{12})", html)
 
     if not keys12:
-        # 追加の保険（ホーム）
         driver.get(f"{BASE_URL}/")
         time.sleep(1.0)
         html2 = driver.page_source
@@ -473,10 +482,7 @@ def detect_meet_candidates(driver, max_candidates: int = 12):
     if not keys12:
         return []
 
-    # 開催単位(10桁)でユニーク化
     meet10_set = set(k[:10] for k in keys12 if len(k) >= 10)
-
-    # 直近っぽい順：数値降順
     meet10_sorted = sorted(meet10_set, reverse=True)
 
     candidates = []
