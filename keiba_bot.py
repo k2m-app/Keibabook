@@ -51,17 +51,18 @@ def get_current_params():
 
 
 # ==================================================
-# 便利：ワンクリックコピー（iframe内JSでclipboardへ書き込み）
+# ワンクリックコピー（components.html + clipboard）
+# ※ Streamlit環境によって components.html が key 引数を受け付けないため
+#   components.html(..., key=...) は使わない
 # ==================================================
-def render_copy_button(text: str, label: str, key: str):
+def render_copy_button(text: str, label: str, dom_id: str):
     """
-    Streamlit標準のcopy UIは環境差があるので、
-    components.html + navigator.clipboard で「ワンクリックコピー」を保証寄りにする。
+    dom_id をHTML側の id として使い、ページ内でユニークにする。
     """
     safe_text = json.dumps(text)  # JS文字列として安全に埋め込む
     html = f"""
-    <div style="display:flex; gap:8px; align-items:center;">
-      <button id="{key}" style="
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <button id="{dom_id}" style="
         padding:8px 12px;
         border-radius:10px;
         border:1px solid #ddd;
@@ -69,24 +70,29 @@ def render_copy_button(text: str, label: str, key: str):
         cursor:pointer;
         font-size:14px;
       ">{label}</button>
-      <span id="{key}-msg" style="font-size:12px; color:#666;"></span>
+      <span id="{dom_id}-msg" style="font-size:12px; color:#666;"></span>
     </div>
     <script>
-      const btn = document.getElementById("{key}");
-      const msg = document.getElementById("{key}-msg");
-      btn.addEventListener("click", async () => {{
-        try {{
-          await navigator.clipboard.writeText({safe_text});
-          msg.textContent = "コピーしました";
-          setTimeout(() => msg.textContent = "", 1200);
-        }} catch (e) {{
-          msg.textContent = "コピーに失敗（ブラウザ制限の可能性）";
-          setTimeout(() => msg.textContent = "", 2200);
-        }}
-      }});
+      (function() {{
+        const btn = document.getElementById("{dom_id}");
+        const msg = document.getElementById("{dom_id}-msg");
+        if (!btn) return;
+
+        btn.addEventListener("click", async () => {{
+          try {{
+            await navigator.clipboard.writeText({safe_text});
+            msg.textContent = "コピーしました";
+            setTimeout(() => msg.textContent = "", 1200);
+          }} catch (e) {{
+            msg.textContent = "コピーに失敗（ブラウザ制限の可能性）";
+            setTimeout(() => msg.textContent = "", 2200);
+          }}
+        }});
+      }})();
     </script>
     """
-    components.html(html, height=46, key=f"html_{key}")
+    # ★key引数は渡さない（あなたの環境ではエラーになる）
+    components.html(html, height=54)
 
 
 # ==================================================
@@ -384,11 +390,6 @@ def parse_syutuba(html: str) -> dict:
     確定出馬(出馬表)ページから
     { "1": {"umaban":"1","bamei":"ケイベエ","kisyu":"木幡巧","kisyu_change":True}, ... }
     を返す。馬番を主キーにする。
-
-    ★ 乗り替わりの騎手は HTML が
-      ... <a> <span class="norikawari">丸山元</span></a>
-      のようになるため、span.norikawari が存在すれば乗り替わりと判定し、
-      出力側で「替・騎手名」にする。
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -420,7 +421,7 @@ def parse_syutuba(html: str) -> dict:
 
         kisyu_p = tr.find("p", class_="kisyu")
         if kisyu_p:
-            a = kisyu_p.find("a")  # 通常ここに騎手名が入る
+            a = kisyu_p.find("a")
             if a:
                 norika = a.find("span", class_="norikawari")
                 if norika:
@@ -429,7 +430,6 @@ def parse_syutuba(html: str) -> dict:
                 else:
                     kisyu = a.get_text(strip=True)
             else:
-                # a が無い場合の保険
                 norika = kisyu_p.find("span", class_="norikawari")
                 if norika:
                     kisyu_change = True
@@ -538,9 +538,6 @@ def detect_meet_candidates(driver, max_candidates: int = 12):
 
 
 def auto_detect_meet_candidates():
-    """
-    ログインして開催候補（複数）を返す。
-    """
     driver = build_driver()
     try:
         login_keibabook(driver)
@@ -627,7 +624,6 @@ def _find_by_name_key(d: dict, bamei: str):
         return None
     if bamei in d:
         return d[bamei]
-    # 完全一致のみ（曖昧一致は事故源）
     for k, v in d.items():
         if (not str(k).isdigit()) and (str(k).strip() == bamei.strip()):
             return v
@@ -642,10 +638,10 @@ def run_all_races(target_races=None):
     target_races: None -> 1~12
                  list/set -> 指定レース番号だけ実行
 
-    改修：
-      - 各レース出力を蓄積
-      - 最後に「全レースまとめ」をワンクリックコピー可能にする
-      - レース単位のコピーも付ける
+    仕様：
+      - レース単位で出力表示
+      - 各レース「ワンクリックコピー」＋txt保存
+      - 最後に「全レースまとめ」をワンクリックコピー＋txt保存＋閲覧用text_area
     """
     race_numbers = (
         list(range(1, 13))
@@ -656,7 +652,6 @@ def run_all_races(target_races=None):
     base_id = f"{YEAR}{KAI}{PLACE}{DAY}"
     place_name = PLACE_NAMES.get(PLACE, "不明")
 
-    # まとめ用
     combined_blocks: list[str] = []
 
     driver = build_driver()
@@ -708,7 +703,6 @@ def run_all_races(target_races=None):
                     sb = syutuba_dict.get(umaban, {})
                     bamei = (sb.get("bamei") or "").strip() or "名称不明"
 
-                    # ★ 乗り替わりの場合は「替・騎手名」
                     kisyu_raw = (sb.get("kisyu") or "").strip()
                     kisyu_change = bool(sb.get("kisyu_change"))
                     if kisyu_raw:
@@ -807,14 +801,14 @@ def run_all_races(target_races=None):
                     status_area.success("✅ 分析完了")
                     save_history(YEAR, KAI, PLACE, place_name, DAY, race_num, race_id, full_answer)
 
-                    # --------------------------
-                    # レース単位：コピーUI
-                    # --------------------------
+                    # レース単位：コピー＆保存
                     with st.expander("📋 このレースの出力をコピー/保存", expanded=False):
+                        # dom_idをユニーク化（再描画対策で時刻も混ぜる）
+                        dom_id = f"copy_race_{race_id}_{int(time.time()*1000)}"
                         render_copy_button(
                             text=full_answer.strip(),
-                            label=f"📋 {place_name}{r}R をコピー",
-                            key=f"copy_race_{race_id}",
+                            label=f"📋 {place_name}{r}R をコピー（ワンクリック）",
+                            dom_id=dom_id,
                         )
                         st.download_button(
                             label=f"⬇️ {place_name}{r}R をtxt保存",
@@ -824,10 +818,7 @@ def run_all_races(target_races=None):
                             key=f"dl_race_{race_id}",
                         )
 
-                    # まとめ用に蓄積（見出し付き）
-                    combined_blocks.append(
-                        f"【{place_name} {r}R】\n{full_answer.strip()}\n"
-                    )
+                    combined_blocks.append(f"【{place_name} {r}R】\n{full_answer.strip()}\n")
 
                 else:
                     status_area.error("⚠️ AIからの回答が空でした。")
@@ -839,19 +830,20 @@ def run_all_races(target_races=None):
 
             st.write("---")
 
-        # ==================================================
-        # 全レースまとめ：ワンクリックコピー
-        # ==================================================
+        # 全レースまとめ：コピー＆保存
         if combined_blocks:
             combined_text = "\n".join(combined_blocks).strip()
             st.session_state["combined_output"] = combined_text
 
             st.subheader("📌 全レースまとめ（要求したレースを全部まとめてコピー）")
+
+            dom_id_all = f"copy_all_{base_id}_{int(time.time()*1000)}"
             render_copy_button(
                 text=combined_text,
                 label="📋 全レースまとめをコピー（ワンクリック）",
-                key=f"copy_all_{base_id}",
+                dom_id=dom_id_all,
             )
+
             st.download_button(
                 label="⬇️ 全レースまとめをtxt保存",
                 data=combined_text,
@@ -860,7 +852,6 @@ def run_all_races(target_races=None):
                 key=f"dl_all_{base_id}",
             )
 
-            # 視認用（長文なら折りたたみ）
             with st.expander("👀 まとめ表示（閲覧用）", expanded=False):
                 st.text_area(
                     "全レースまとめテキスト",
