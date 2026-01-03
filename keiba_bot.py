@@ -3,6 +3,7 @@ import json
 import re
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -47,6 +48,45 @@ def set_race_params(year, kai, place, day):
 def get_current_params():
     """現在のパラメータ（UI表示用）"""
     return YEAR, KAI, PLACE, DAY
+
+
+# ==================================================
+# 便利：ワンクリックコピー（iframe内JSでclipboardへ書き込み）
+# ==================================================
+def render_copy_button(text: str, label: str, key: str):
+    """
+    Streamlit標準のcopy UIは環境差があるので、
+    components.html + navigator.clipboard で「ワンクリックコピー」を保証寄りにする。
+    """
+    safe_text = json.dumps(text)  # JS文字列として安全に埋め込む
+    html = f"""
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button id="{key}" style="
+        padding:8px 12px;
+        border-radius:10px;
+        border:1px solid #ddd;
+        background:#fff;
+        cursor:pointer;
+        font-size:14px;
+      ">{label}</button>
+      <span id="{key}-msg" style="font-size:12px; color:#666;"></span>
+    </div>
+    <script>
+      const btn = document.getElementById("{key}");
+      const msg = document.getElementById("{key}-msg");
+      btn.addEventListener("click", async () => {{
+        try {{
+          await navigator.clipboard.writeText({safe_text});
+          msg.textContent = "コピーしました";
+          setTimeout(() => msg.textContent = "", 1200);
+        }} catch (e) {{
+          msg.textContent = "コピーに失敗（ブラウザ制限の可能性）";
+          setTimeout(() => msg.textContent = "", 2200);
+        }}
+      }});
+    </script>
+    """
+    components.html(html, height=46, key=f"html_{key}")
 
 
 # ==================================================
@@ -456,12 +496,6 @@ def detect_meet_candidates(driver, max_candidates: int = 12):
     """
     Keibabook内ページから syutuba racekey を拾い、
     開催単位（YYYYKAIPLACEDAY = 10桁）でユニーク化して候補リストを返す。
-
-    return例:
-    [
-      {"meet10":"2025050401", "year":"2025","kai":"05","place":"04","day":"01","place_name":"東京"},
-      ...
-    ]
     """
     driver.get(f"{BASE_URL}/cyuou/")
     time.sleep(1.0)
@@ -607,6 +641,11 @@ def run_all_races(target_races=None):
     """
     target_races: None -> 1~12
                  list/set -> 指定レース番号だけ実行
+
+    改修：
+      - 各レース出力を蓄積
+      - 最後に「全レースまとめ」をワンクリックコピー可能にする
+      - レース単位のコピーも付ける
     """
     race_numbers = (
         list(range(1, 13))
@@ -616,6 +655,9 @@ def run_all_races(target_races=None):
 
     base_id = f"{YEAR}{KAI}{PLACE}{DAY}"
     place_name = PLACE_NAMES.get(PLACE, "不明")
+
+    # まとめ用
+    combined_blocks: list[str] = []
 
     driver = build_driver()
 
@@ -645,7 +687,7 @@ def run_all_races(target_races=None):
                 # A-3 cyokyo
                 cyokyo_dict = fetch_cyokyo_dict(driver, race_id)
 
-                # A-3.5 syutuba（馬番・馬名・騎手）※全頭保証の基礎
+                # A-3.5 syutuba（馬番・馬名・騎手）
                 syutuba_dict = fetch_syutuba_dict(driver, race_id)
 
                 if not syutuba_dict:
@@ -666,7 +708,7 @@ def run_all_races(target_races=None):
                     sb = syutuba_dict.get(umaban, {})
                     bamei = (sb.get("bamei") or "").strip() or "名称不明"
 
-                    # ★ 乗り替わりの場合は「替・騎手名」にする（それ以外はそのまま）
+                    # ★ 乗り替わりの場合は「替・騎手名」
                     kisyu_raw = (sb.get("kisyu") or "").strip()
                     kisyu_change = bool(sb.get("kisyu_change"))
                     if kisyu_raw:
@@ -703,7 +745,7 @@ def run_all_races(target_races=None):
                     else:
                         prev_block = "  【前走】 新馬（前走情報なし）\n"
 
-                    # 調教（短評＋詳細のみ）※馬名は出さない＝重複排除
+                    # 調教
                     c = cyokyo_dict.get(umaban)
                     if not c:
                         c = _find_by_name_key(cyokyo_dict, bamei)
@@ -764,6 +806,29 @@ def run_all_races(target_races=None):
                 if full_answer.strip():
                     status_area.success("✅ 分析完了")
                     save_history(YEAR, KAI, PLACE, place_name, DAY, race_num, race_id, full_answer)
+
+                    # --------------------------
+                    # レース単位：コピーUI
+                    # --------------------------
+                    with st.expander("📋 このレースの出力をコピー/保存", expanded=False):
+                        render_copy_button(
+                            text=full_answer.strip(),
+                            label=f"📋 {place_name}{r}R をコピー",
+                            key=f"copy_race_{race_id}",
+                        )
+                        st.download_button(
+                            label=f"⬇️ {place_name}{r}R をtxt保存",
+                            data=full_answer.strip(),
+                            file_name=f"{YEAR}{KAI}{PLACE}{DAY}_{place_name}_{r}R.txt",
+                            mime="text/plain",
+                            key=f"dl_race_{race_id}",
+                        )
+
+                    # まとめ用に蓄積（見出し付き）
+                    combined_blocks.append(
+                        f"【{place_name} {r}R】\n{full_answer.strip()}\n"
+                    )
+
                 else:
                     status_area.error("⚠️ AIからの回答が空でした。")
 
@@ -773,6 +838,38 @@ def run_all_races(target_races=None):
                 status_area.error(err_msg)
 
             st.write("---")
+
+        # ==================================================
+        # 全レースまとめ：ワンクリックコピー
+        # ==================================================
+        if combined_blocks:
+            combined_text = "\n".join(combined_blocks).strip()
+            st.session_state["combined_output"] = combined_text
+
+            st.subheader("📌 全レースまとめ（要求したレースを全部まとめてコピー）")
+            render_copy_button(
+                text=combined_text,
+                label="📋 全レースまとめをコピー（ワンクリック）",
+                key=f"copy_all_{base_id}",
+            )
+            st.download_button(
+                label="⬇️ 全レースまとめをtxt保存",
+                data=combined_text,
+                file_name=f"{YEAR}{KAI}{PLACE}{DAY}_{place_name}_ALL.txt",
+                mime="text/plain",
+                key=f"dl_all_{base_id}",
+            )
+
+            # 視認用（長文なら折りたたみ）
+            with st.expander("👀 まとめ表示（閲覧用）", expanded=False):
+                st.text_area(
+                    "全レースまとめテキスト",
+                    value=combined_text,
+                    height=420,
+                    key=f"ta_all_{base_id}",
+                )
+        else:
+            st.info("まとめ対象の出力がありませんでした。")
 
     finally:
         try:
