@@ -17,8 +17,11 @@ if "selected_races" not in st.session_state:
 if "meet_candidates" not in st.session_state:
     st.session_state.meet_candidates = []
 
+# まとめ出力（keiba_bot側でセットされる）
+if "combined_output" not in st.session_state:
+    st.session_state.combined_output = ""
+
 # race_1〜race_12 の初期化（ここでのみ初期値を作る）
-# 以後、checkboxには value= を渡さない（session_stateが唯一の正）
 for i in range(1, 13):
     k = f"race_{i}"
     if k not in st.session_state:
@@ -117,7 +120,7 @@ grid = st.columns(6)
 for i in range(1, 13):
     col = grid[(i - 1) % 6]
     with col:
-        st.checkbox(f"{i}R", key=f"race_{i}")  # value=は渡さない
+        st.checkbox(f"{i}R", key=f"race_{i}")
 
 # チェックボックス描画後に同期
 sync_selected_races_from_checks()
@@ -132,6 +135,9 @@ run_mode = st.radio(
 )
 
 if st.button("🚀 実行開始", type="primary"):
+    # 実行のたびに前回のまとめをクリア（表示が混ざるのを防ぐ）
+    st.session_state["combined_output"] = ""
+
     y, k, p, d = keiba_bot.get_current_params()
     place_name = PLACE_NAMES.get(p, "不明")
     st.info(f"実行対象：{y}年 {k}回 {place_name} {d}日目")
