@@ -549,7 +549,6 @@ def parse_syutuba(html: str) -> dict:
                     kisyu = kisyu_p.get_text(" ", strip=True)
 
         # スピード指数、バイアス、F値などを取得
-        # ※実際のHTML構造に合わせて調整が必要
         speed_score = ""
         hensachi = ""
         bias = ""
@@ -1130,3 +1129,4 @@ def run_all_races(target_races=None):
             driver.quit()
         except Exception:
             pass
+
