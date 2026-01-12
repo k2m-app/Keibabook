@@ -51,6 +51,116 @@ def get_current_params():
 
 
 # ==================================================
+# 近走指数計算関数
+# ==================================================
+def calculate_kinso_score(tuuka_patterns: list) -> int:
+    """
+    近走指数を計算する関数
+    
+    Args:
+        tuuka_patterns: 近走データのリスト（最大3走分）
+                       各要素は文字列で "(7-11-13-13→6着)" のような形式
+    
+    Returns:
+        int: 近走指数（最大10点）
+    """
+    score = 0
+    
+    # 近3走分のデータを処理（最大3走まで）
+    recent_3_races = tuuka_patterns[:3] if len(tuuka_patterns) >= 3 else tuuka_patterns
+    
+    # 条件①②のチェック用フラグ
+    condition_1_met = False  # +8点条件
+    condition_2_met = False  # +5点条件
+    
+    for pattern in recent_3_races:
+        # 通過順パターンを解析
+        # 例: "(7-11-13-13→6着)" または "(9-10→5着)"
+        match = re.search(r'\(([0-9\-]+)→(\d+)着?\)', pattern)
+        if not match:
+            continue
+        
+        positions_str = match.group(1)  # "7-11-13-13" または "9-10"
+        final_position = int(match.group(2))  # 6 または 5
+        
+        positions = [int(p) for p in positions_str.split('-')]
+        
+        if len(positions) < 2:
+            continue
+        
+        # 道中の最良順位と最悪順位を取得
+        best_position = min(positions)
+        worst_position = max(positions)
+        
+        # 道中順位の悪化度
+        position_drop = worst_position - best_position
+        
+        # 最終着順での巻き返し度
+        comeback = worst_position - final_position
+        
+        # 条件①: 道中4つ以上悪化 & 最終2つ以上巻き返し → +8点
+        if position_drop >= 4 and comeback >= 2:
+            condition_1_met = True
+        
+        # 条件②: 道中2つ以上悪化 & 最終2つ以上巻き返し → +5点
+        elif position_drop >= 2 and comeback >= 2:
+            condition_2_met = True
+    
+    # 条件①②のスコア加算（①が優先、重複しない）
+    if condition_1_met:
+        score += 8
+    elif condition_2_met:
+        score += 5
+    
+    # 条件③: 近3走のうち50%以上で4コーナー4番手以内 → +2点
+    corner4_within_4_count = 0
+    valid_race_count = 0
+    
+    for pattern in recent_3_races:
+        match = re.search(r'\(([0-9\-]+)→(\d+)着?\)', pattern)
+        if not match:
+            continue
+        
+        positions_str = match.group(1)
+        positions = [int(p) for p in positions_str.split('-')]
+        
+        # 4コーナーの順位を取得
+        # パターンが4つある場合: positions[3]が4コーナー
+        # パターンが2つの場合: positions[1]が4コーナー
+        if len(positions) >= 4:
+            corner4_position = positions[3]
+        elif len(positions) >= 2:
+            corner4_position = positions[1]
+        else:
+            continue
+        
+        valid_race_count += 1
+        if corner4_position <= 4:
+            corner4_within_4_count += 1
+    
+    # 50%以上の判定
+    if valid_race_count > 0 and corner4_within_4_count / valid_race_count >= 0.5:
+        score += 2
+    
+    # 最大10点に制限
+    return min(score, 10)
+
+
+def extract_tuuka_patterns_from_kinso_text(kinso_text: str) -> list:
+    """
+    【近走】テキストから通過順パターンを抽出
+    
+    Args:
+        kinso_text: "【近走】[2025.12.20 ... (7-11-13-13→6着)] / [... (9-10→5着)] / ..."
+    
+    Returns:
+        list: 通過順パターンのリスト ["(7-11-13-13→6着)", "(9-10→5着)", ...]
+    """
+    patterns = re.findall(r'\([0-9\-]+→\d+着?\)', kinso_text)
+    return patterns
+
+
+# ==================================================
 # ワンクリックコピー（components.html + clipboard）
 # ※ Streamlit環境によって components.html が key 引数を受け付けないため
 #   components.html(..., key=...) は使わない
@@ -448,6 +558,58 @@ def parse_syutuba(html: str) -> dict:
 
 
 # ==================================================
+# 近走データのパース（新規追加）
+# ==================================================
+def parse_kinso_data(html: str) -> dict:
+    """
+    近走データを取得（shutuba_past.htmlから）
+    
+    戻り値：{ "1": "近走テキスト（通過順含む）", ... }（馬番キー）
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    kinso_dict = {}
+    
+    # 近走データのテーブルを探す
+    # ※実際のHTMLの構造に合わせて調整が必要
+    # ここでは一般的な構造を想定
+    
+    table = soup.find("table", class_=lambda c: c and ("shutuba_past" in c or "past" in c))
+    if not table:
+        # 別のクラス名を試す
+        tables = soup.find_all("table")
+        for t in tables:
+            if t.find("td", class_="umaban"):
+                table = t
+                break
+    
+    if not table or not table.tbody:
+        return {}
+    
+    # 各行を処理
+    for tr in table.tbody.find_all("tr", recursive=False):
+        uma_td = tr.find("td", class_="umaban")
+        if not uma_td:
+            continue
+        
+        umaban = re.sub(r"\D", "", uma_td.get_text(strip=True))
+        if not umaban:
+            continue
+        
+        # 近走データ全体を取得
+        # 通常、通過順は特定のクラスやテキストパターンで識別可能
+        kinso_text = tr.get_text(" ", strip=True)
+        
+        # 通過順パターンを含む部分を抽出
+        # 例: "(7-11-13-13→6着)" のようなパターン
+        patterns = re.findall(r'\([0-9\-]+→\d+着?\)', kinso_text)
+        
+        if patterns:
+            kinso_dict[umaban] = kinso_text
+    
+    return kinso_dict
+
+
+# ==================================================
 # fetch（Selenium）
 # ==================================================
 def fetch_danwa_dict(driver, race_id: str):
@@ -487,6 +649,23 @@ def fetch_syutuba_dict(driver, race_id: str):
     except Exception:
         pass
     return parse_syutuba(driver.page_source)
+
+
+def fetch_kinso_dict(driver, race_id: str):
+    """
+    近走データを取得（shutuba_past.htmlから）
+    ※URLは実際のサイト構造に合わせて調整
+    """
+    # keibabook の近走データページURL（要確認・調整）
+    url = f"{BASE_URL}/cyuou/shutuba_past/{race_id}"
+    
+    try:
+        driver.get(url)
+        time.sleep(0.8)
+        return parse_kinso_data(driver.page_source)
+    except Exception as e:
+        print(f"近走データ取得エラー: {e}")
+        return {}
 
 
 # ==================================================
@@ -685,6 +864,9 @@ def run_all_races(target_races=None):
                 # A-3.5 syutuba（馬番・馬名・騎手）
                 syutuba_dict = fetch_syutuba_dict(driver, race_id)
 
+                # A-3.6 kinso（近走データ）★NEW
+                kinso_dict = fetch_kinso_dict(driver, race_id)
+
                 if not syutuba_dict:
                     status_area.warning("⚠️ 出馬表が取得できませんでした（全頭保証できない可能性）。")
 
@@ -753,11 +935,26 @@ def run_all_races(target_races=None):
                     else:
                         cyokyo_block = "  【調教】 （情報なし）\n"
 
+                    # 近走指数計算 ★NEW
+                    kinso_text = kinso_dict.get(umaban, "")
+                    if not kinso_text:
+                        kinso_text = _find_by_name_key(kinso_dict, bamei) or ""
+                    
+                    kinso_score = 0
+                    if kinso_text:
+                        tuuka_patterns = extract_tuuka_patterns_from_kinso_text(kinso_text)
+                        kinso_score = calculate_kinso_score(tuuka_patterns)
+                    
+                    kinso_block = f"  【近走指数】 {kinso_score}/10点\n"
+                    if kinso_text:
+                        kinso_block += f"  【近走詳細】 {kinso_text}\n"
+
                     text = (
                         f"▼[馬番{umaban}] {bamei} / 騎手:{kisyu}\n"
                         f"  【厩舎の話】 {d_comment}\n"
                         f"{prev_block}"
                         f"{cyokyo_block}"
+                        f"{kinso_block}"
                     )
                     merged.append(text)
 
