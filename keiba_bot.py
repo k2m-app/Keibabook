@@ -498,7 +498,8 @@ def parse_cyokyo(html: str):
 def parse_syutuba(html: str) -> dict:
     """
     確定出馬(出馬表)ページから
-    { "1": {"umaban":"1","bamei":"ケイベエ","kisyu":"木幡巧","kisyu_change":True}, ... }
+    { "1": {"umaban":"1","bamei":"ケイベエ","kisyu":"木幡巧","kisyu_change":True,
+            "speed_score":"25.52/30", "hensachi":"53.6", "bias":"0/10", "f_value":"△/-"}, ... }
     を返す。馬番を主キーにする。
     """
     soup = BeautifulSoup(html, "html.parser")
@@ -547,11 +548,47 @@ def parse_syutuba(html: str) -> dict:
                 else:
                     kisyu = kisyu_p.get_text(" ", strip=True)
 
+        # スピード指数、バイアス、F値などを取得
+        # ※実際のHTML構造に合わせて調整が必要
+        speed_score = ""
+        hensachi = ""
+        bias = ""
+        f_value = ""
+        
+        # データ欄から情報を抽出（例：class="data"などから）
+        data_elem = tr.find("td", class_=lambda c: c and "data" in c.lower() if c else False)
+        if data_elem:
+            data_text = data_elem.get_text(strip=True)
+            
+            # スピード指数を抽出（例：指数:25.52/30）
+            speed_match = re.search(r'指数[:：]?([\d.]+/\d+)', data_text)
+            if speed_match:
+                speed_score = speed_match.group(1)
+            
+            # 偏差値を抽出
+            hensachi_match = re.search(r'偏差値[:：]?([\d.]+)', data_text)
+            if hensachi_match:
+                hensachi = hensachi_match.group(1)
+            
+            # バイアスを抽出
+            bias_match = re.search(r'バイアス[:：]?([\d]+/\d+)', data_text)
+            if bias_match:
+                bias = bias_match.group(1)
+            
+            # F値を抽出
+            f_match = re.search(r'F[:：]?([△○×◎\-/]+)', data_text)
+            if f_match:
+                f_value = f_match.group(1)
+
         result[umaban] = {
             "umaban": umaban,
             "bamei": bamei,
             "kisyu": kisyu,
             "kisyu_change": kisyu_change,
+            "speed_score": speed_score,
+            "hensachi": hensachi,
+            "bias": bias,
+            "f_value": f_value,
         }
 
     return result
@@ -892,6 +929,12 @@ def run_all_races(target_races=None):
                     else:
                         kisyu = "（騎手不明）"
 
+                    # 既存の指数データを取得
+                    speed_score = sb.get("speed_score", "")
+                    hensachi = sb.get("hensachi", "")
+                    bias = sb.get("bias", "")
+                    f_value = sb.get("f_value", "")
+
                     # 厩舎の話
                     d_comment = danwa_dict.get(umaban)
                     if not d_comment:
@@ -945,12 +988,35 @@ def run_all_races(target_races=None):
                         tuuka_patterns = extract_tuuka_patterns_from_kinso_text(kinso_text)
                         kinso_score = calculate_kinso_score(tuuka_patterns)
                     
-                    kinso_block = f"  【近走指数】 {kinso_score}/10点\n"
+                    # 近走データブロック（詳細のみ、指数は【データ】欄に記載）
+                    kinso_block = ""
                     if kinso_text:
-                        kinso_block += f"  【近走詳細】 {kinso_text}\n"
+                        kinso_block = f"  【近走】 {kinso_text}\n"
+                    else:
+                        kinso_block = "  【近走】 （情報なし）\n"
+
+                    # 【データ】欄を構築
+                    data_parts = []
+                    if speed_score:
+                        if hensachi:
+                            data_parts.append(f"スピード指数:{speed_score} (偏差値:{hensachi})")
+                        else:
+                            data_parts.append(f"スピード指数:{speed_score}")
+                    
+                    if bias:
+                        data_parts.append(f"バイアス:{bias}")
+                    
+                    # 近走指数は常に表示
+                    data_parts.append(f"近走指数:{kinso_score}/10")
+                    
+                    if f_value:
+                        data_parts.append(f"F:{f_value}")
+                    
+                    data_line = " ".join(data_parts) if data_parts else "（データなし）"
 
                     text = (
                         f"▼[馬番{umaban}] {bamei} / 騎手:{kisyu}\n"
+                        f"  【データ】 {data_line}\n"
                         f"  【厩舎の話】 {d_comment}\n"
                         f"{prev_block}"
                         f"{cyokyo_block}"
